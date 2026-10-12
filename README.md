@@ -12,12 +12,11 @@ PaperBridge 不代替作者决定论文内容。它用于保持中文修改、�
 ## 主要功能
 
 1. **翻译维护**：导入 ZIP 或本地项目时，自动排除导言区、作者信息、宏定义、公式、图表、算法代码和参考文献等非翻译内容；按段落维护中文工作稿和英文 LaTeX，只翻译指定段落或章节。
-2. **格式调整**：根据文字要求或 Word、PDF、TeX、ZIP 模板分析格式差异并迁移论文格式；修改直接写入，编译时集中反馈错误，关键操作失败时自动恢复。
-3. **版本维护**：支持 Overleaf Git，以及 GitHub、GitLab 等 HTTPS Git 仓库的拉取和推送；支持 OpenAI 兼容接口、DeepSeek、Anthropic 和 Gemini，并可分别配置翻译模型与格式诊断模型。
+2. **版本维护**：支持 Overleaf Git，以及 GitHub、GitLab 等 HTTPS Git 仓库的拉取和推送；支持 OpenAI 兼容接口、DeepSeek、Anthropic 和 Gemini，并可分别配置翻译模型与编译诊断模型。
 
 ## 安装
 
-Windows 桌面版是当前主线，只提供一个完整安装版。请在 [GitHub Releases](https://github.com/liyunjie-phd/PaperBridge/releases) 中选择名称以 `windows-v` 开头的 release 下载；Windows 的开发和发布优先级最高。
+Windows 桌面版是当前主线。请在 [GitHub Releases](https://github.com/liyunjie-phd/PaperBridge/releases) 中选择名称以 `windows-v` 开头的 release 下载；Windows 的开发和发布优先级最高。
 
 ### 三条产品线的版本
 
@@ -25,15 +24,15 @@ PBLaTex 插件、Windows 桌面版和 macOS 桌面版各自维护版本号，不
 
 | 产品线 | 当前版本 | 发布 tag 前缀 | 说明 |
 | --- | --- | --- | --- |
-| Windows | 0.5.0 | `windows-v` | 主线，优先更新和发布 |
+| Windows | 0.5.1 | `windows-v` | 主线，优先更新和发布 |
 | macOS | 0.1.0 | `macos-v` | 独立的 DMG / ZIP 构建 |
 | PBLaTex | 0.1.0 | `pblatex-v` | VS Code 增强插件 |
 
-例如，Windows 发布使用 `windows-v0.4.3`，macOS 发布使用 `macos-v0.1.1`；一个产品线的版本更新不会改变其他产品线的版本。构建前可运行 `npm run versions:check` 检查版本是否一致，使用 `npm run versions:set -- <product> <version>` 更新指定产品线。
+例如，Windows 发布使用 `windows-v0.5.1`，macOS 发布使用 `macos-v0.1.1`；一个产品线的版本更新不会改变其他产品线的版本。构建前可运行 `npm run versions:check` 检查版本是否一致，使用 `npm run versions:set -- <product> <version>` 更新指定产品线。
 
 本次版本新增参考文献工作台：可以通过 DOI、doi.org 链接或论文网页自动生成 BibTeX，自动建议 `author_year_keyword` 形式的 citation key，识别重复文献，并在写入前预览和修改 BibTeX。工作台也支持搜索、查看字段解释以及直接插入正文引用。
 
-安装程序包含 PaperBridge、Git 和 Tectonic，不需要另行安装 Node.js。电脑已经安装 TeX Live 或 MiKTeX，并且可以使用 `latexmk` 时，PaperBridge 会优先使用本机 LaTeX；否则自动使用内置 Tectonic。
+Windows 提供两种安装包：`PaperBridge-with-Git-Setup.exe` 是完整版，内置 Git 和 Tectonic；`PaperBridge-Setup.exe` 是精简版，不内置 Git，但保留 Tectonic。两种版本都不需要另行安装 Node.js。电脑已经安装 TeX Live 或 MiKTeX，并且可以使用 `latexmk` 时，PaperBridge 会优先使用本机 LaTeX；否则自动使用内置 Tectonic。
 
 安装时可以选择程序安装目录。首次启动时还可以单独选择数据目录，用于保存设置、中文工作稿、源码备份和导入的论文项目，数据目录之后也可以在设置中迁移到其他磁盘。
 
@@ -75,7 +74,7 @@ PaperBridge 会在本机加密保存 Token，并在拉取和推送时自动使�
 
 ### 3. 配置 AI 接口
 
-PaperBridge 支持 OpenAI 兼容接口、Anthropic Messages 和 Gemini GenerateContent。首次配置会将同一接口用于段落翻译、格式迁移和编译诊断，之后可以在设置中分别调整。
+PaperBridge 支持 OpenAI 兼容接口、Anthropic Messages 和 Gemini GenerateContent。首次配置会将同一接口用于段落翻译和编译诊断，之后可以在设置中分别调整。
 
 以 DeepSeek 为例：
 
@@ -110,88 +109,6 @@ PaperBridge 目前支持 HTTPS 仓库，不支持 SSH 地址。公开仓库可�
 6. **处理编译错误**：打开右侧编译信息，查看 AI 给出的文件、行号、原因和建议；点击位置后人工确认并修改源码。相同错误会复用本地诊断缓存。
 7. **同步与交付**：确认 PDF 后导出文件；使用 Overleaf 或普通 Git 仓库时，再执行拉取、检查和推送。
 
-## 格式迁移工作流
-
-格式迁移用于将现有论文调整到新的会议或期刊模板。目标不是让 AI 重新生成整篇论文，而是识别当前格式与目标格式之间的差异，并通过可校验的局部操作修改 TeX。
-
-```mermaid
-flowchart LR
-    A[填写格式要求或上传模板] --> B[检查主文件、章节与参考文献]
-    B --> C{是否先整理结构}
-    C -->|推荐| D[迁移内嵌 Bib 并按章节拆分]
-    C -->|保持单文件| E[接受长上下文风险]
-    D --> F[分析格式差异]
-    E --> F
-    F --> G[用户确认修改清单]
-    G --> H[修改 main.tex 整体格式]
-    H --> I[逐章处理局部格式]
-    I --> J[完整性检查与编译]
-    J -->|通过| K[预览并导出 PDF]
-    J -->|失败| L[最小修复或自动恢复]
-```
-
-### 1. 提供目标格式
-
-进入 **格式** 页面，可以同时使用两类依据：
-
-- 在文本框中描述会议或期刊要求，例如单双栏、纸张、页边距、字体、字号、标题和参考文献样式。
-- 上传从官网获得的 Word、PDF、TeX 或 ZIP 模板。ZIP 可以包含完整 LaTeX 模板、类文件和样式文件。
-
-建议优先使用会议或期刊官网提供的原始模板，并补充无法从模板中直接判断的要求。
-
-### 2. 检查论文结构
-
-点击分析后，PaperBridge 会先检查主 TeX、章节和参考文献组织方式，不会立即修改格式。
-
-- 如果检测到内嵌 `thebibliography` 或 `filecontents`，可以先一键迁移到独立 `.bib`。引用键和原始文献文本会保留，不会让 AI 猜测缺失的作者、题名、期刊或 DOI。
-- 如果正文集中在一个较长的 `main.tex` 中，推荐一键按顶层 `\section` 拆成章节文件。`main.tex` 保留全局排版、宏包和 Bib 调用，章节文件保留正文、公式、图片和表格。
-- 也可以选择不拆分继续，但长论文可能超过模型上下文限制，导致分析不完整或迁移失败。
-
-参考文献迁移和章节拆分都会先显示文件清单，确认后才写入，并在写入后重新编译。失败时自动恢复，不会留下拆到一半的项目。
-
-### 3. 分析格式差异
-
-结构确认后，PaperBridge 调用配置的格式与诊断 API，比较目标模板、文字要求和当前项目，生成：
-
-- 目标格式名称和摘要；
-- 当前格式与目标格式的差异；
-- 预计修改的文件和阶段；
-- 可能影响编译、篇幅或排版的警告。
-
-分析阶段只生成计划，不写入论文。用户应先检查差异是否符合目标会议或期刊要求，再点击应用。
-
-### 4. 分阶段应用修改
-
-格式迁移按照“整体格式、章节局部格式、参考文献独立保留”的顺序执行：
-
-1. 先修改 `main.tex` 中的 `documentclass`、单双栏、纸张、页边距、字体、字号、宏包和参考文献样式等全局设置。
-2. 再逐个章节处理标题层级、局部环境以及模板要求的正文结构。
-3. `.bib` 条目不会交给格式模型重写，图片文件也不会被 AI 替换或重新生成。
-
-每次模型调用只包含当前阶段和当前文件所需的上下文，不会让模型一次重写整个项目。这种方式既减少 token，也能让相对较弱的模型完成基础格式迁移。
-
-### 5. 本地校验、修复与恢复
-
-模型返回的每项修改都必须通过本地校验：
-
-- 定位文本必须存在且唯一，不能依靠模糊替换大段源码。
-- 翻译、英文编辑和格式迁移都按用户输入直接写入，不再因为 LaTeX 命令、引用、公式或标记的新增、删除、变更而拦截；语法问题统一在编译时显示。
-- 正文、引用、标签、公式环境和图片路径不能无故丢失。
-- 局部章节不能擅自加入只应出现在主文件中的全局命令。
-
-模型输出格式错误或定位失败时，PaperBridge 会把校验原因反馈给模型并重试。应用完成后会重新编译；如果出现致命错误，最多进行两次基于编译日志的最小修复。完整性检查不通过或最终仍无法编译时，本次格式迁移会自动恢复全部文件。
-
-### 6. 人工验收与导出
-
-格式迁移成功只表示项目通过了结构检查和本地编译。提交前仍应人工检查：
-
-- 会议或期刊规定的页数、单双栏、纸张和字体；
-- 标题、作者、单位、摘要、关键词和版权信息；
-- 公式编号、交叉引用、参考文献样式和引用顺序；
-- 图片清晰度、浮动位置、表格宽度和跨栏效果。
-
-确认无误后，可以在 PaperBridge 中一键导出 PDF，或将 TeX 项目推送回 Overleaf 继续检查。
-
 ## 数据位置与隐私
 
 - PaperBridge 在 Windows 本地运行并编译 LaTeX。
@@ -223,7 +140,7 @@ flowchart LR
 
 ### `AI provider returned 401: Authentication Fails`
 
-DeepSeek 将 401 定义为 API Key 认证失败。PaperBridge 的“段落翻译”和“格式迁移与编译诊断”可以使用不同接口，因此应在设置中分别确认两处都显示 **已保存 API Key**，再点击对应的测试按钮。仍然失败时，请在 DeepSeek 开放平台重新创建 Key，并确认没有把 Base URL 误填到 API Key 输入框。
+DeepSeek 将 401 定义为 API Key 认证失败。PaperBridge 的“段落翻译”和“编译错误诊断”可以使用不同接口，因此应在设置中分别确认两处都显示 **已保存 API Key**，再点击对应的测试按钮。仍然失败时，请在 DeepSeek 开放平台重新创建 Key，并确认没有把 Base URL 误填到 API Key 输入框。
 
 ## 本地开发
 
@@ -237,6 +154,12 @@ npm run desktop
 
 ```powershell
 npm run build:windows
+```
+
+生成不内置 Git 的 Windows 精简版：
+
+```powershell
+npm run build:windows:slim
 ```
 
 ## macOS 版本

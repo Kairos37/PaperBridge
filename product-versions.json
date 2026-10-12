@@ -1,6 +1,6 @@
 {
   "windows": {
-    "version": "0.5.0",
+    "version": "0.5.1",
     "tagPrefix": "windows-v",
     "artifactDirectory": "release/windows",
     "description": "Windows 桌面版（主线）"

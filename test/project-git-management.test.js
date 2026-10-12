@@ -58,7 +58,7 @@ test("project Git management keeps defaults per project and never exposes creden
 
     let response = await post("/api/config", {
       translation: { model: "deepseek-v4-flash", apiKey: "translation-key" },
-      format: { model: "deepseek-v4-pro", apiKey: "format-key" }
+      diagnosis: { model: "deepseek-v4-pro", apiKey: "diagnosis-key" }
     });
     assert.equal(response.ok, true);
 

@@ -114,3 +114,57 @@ test("figure insertion at the TeX cursor can reuse a project image and create a 
     assert.match(result.source.content, /\\label\{fig:overview\}/);
   });
 });
+
+test("project files expose folders and previewable assets, with deterministic upload conflicts", async () => {
+  await withFigureProject(async ({ projectRoot, server }) => {
+    await fs.mkdir(path.join(projectRoot, "figures", "panels"), { recursive: true });
+    await fs.writeFile(path.join(projectRoot, "figures", "panels", "overview.svg"), "<svg></svg>", "utf8");
+    await fs.writeFile(path.join(projectRoot, "figures", "panels", "plot.pdf"), "%PDF-1.4\n", "utf8");
+    const bootstrap = await jsonRequest(server.url, "/api/bootstrap");
+    const overview = bootstrap.projectFiles.find((entry) => entry.path === "figures/panels/overview.svg");
+    assert.equal(overview.type, "file");
+    assert.equal(overview.previewable, true);
+    assert.ok(bootstrap.projectFiles.some((entry) => entry.path === "figures" && entry.type === "directory"));
+    const preview = await fetch(`${server.url}/api/project/file?path=${encodeURIComponent("figures/panels/overview.svg")}`);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get("content-type"), "image/svg+xml");
+    const pdfPreview = await fetch(`${server.url}/api/project/file?path=${encodeURIComponent("figures/panels/plot.pdf")}`);
+    assert.equal(pdfPreview.status, 200);
+    assert.equal(pdfPreview.headers.get("content-type"), "application/pdf");
+
+    const upload = async (query = "") => fetch(`${server.url}/api/figure/upload?name=panel.png${query}`, {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    });
+    let response = await upload();
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).relativePath, "figures/paperbridge-images/panel.png");
+    response = await upload();
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, "FIGURE_NAME_CONFLICT");
+    response = await upload("&conflictMode=suffix");
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).relativePath, "figures/paperbridge-images/panel (2).png");
+  });
+});
+
+test("figure count input can be cleared, accepts up to 24 images, and selects its default before typing", async () => {
+  const [indexHtml, appJs, serverJs] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "public", "index.html"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "server.js"), "utf8")
+  ]);
+  assert.match(indexHtml, /id="figureImageCountInput"[^>]*min="1"[^>]*max="24"[^>]*value="1"/);
+  assert.match(appJs, /\[elements\.figureImageCountInput, elements\.figureColumnsInput\][\s\S]*input\.addEventListener\("focus", focusFigureCountInput\)/);
+  assert.match(appJs, /const input = event\.currentTarget;\s*state\.figureNumberInputChanged = false;\s*input\.select\(\);/);
+  assert.match(appJs, /!state\.figureNumberInputChanged/);
+  assert.match(appJs, /function handleFigureNumberInput\(event\)/);
+  assert.match(appJs, /if \(!String\(input\?\.value \|\| ""\)\.trim\(\)\) return;/);
+  assert.match(appJs, /const MAX_FIGURE_IMAGE_COUNT = 24/);
+  assert.match(appJs, /input\.addEventListener\("blur", commitFigureNumberInput\)/);
+  assert.match(appJs, /input\.addEventListener\("change", commitFigureNumberInput\)/);
+  assert.match(appJs, /Math\.ceil\(count \/ columns\) \* columns/);
+  assert.match(serverJs, /const FIGURE_MAX_IMAGES = 24/);
+  assert.match(serverJs, /\.slice\(0, FIGURE_MAX_IMAGES\)/);
+});

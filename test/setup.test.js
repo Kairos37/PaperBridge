@@ -49,13 +49,16 @@ test("main TeX detection creates a minimal main.tex for an empty project", async
   }
 });
 
-test("a blank PaperBridge project is created with a main TeX file", async () => {
+test("a blank PaperBridge project is created with main.tex and reference.bib", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperbridge-new-project-"));
   try {
     const project = await createNewProject("My New Paper", root);
     assert.equal(project.mainTex, "main.tex");
     assert.equal(path.dirname(project.projectRoot), root);
-    assert.match(await fs.readFile(path.join(project.projectRoot, "main.tex"), "utf8"), /\\section\{Introduction\}/);
+    const mainSource = await fs.readFile(path.join(project.projectRoot, "main.tex"), "utf8");
+    assert.match(mainSource, /\\section\{Introduction\}/);
+    assert.match(mainSource, /\\bibliography\{reference\}/);
+    assert.equal(await fs.readFile(path.join(project.projectRoot, "reference.bib"), "utf8"), "");
   } finally {
     const relative = path.relative(os.tmpdir(), root);
     assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));

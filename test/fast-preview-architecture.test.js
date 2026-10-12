@@ -339,3 +339,20 @@ test("fast preview probe inserts a section as a small patch instead of a full re
   assert.ok(insertPatches.some((patch) => /Inserted Preview Section/.test(patch.html)));
   assert.ok(patches.length < 10);
 });
+
+test("fast preview renders figure environments as layout-aware image blocks", async () => {
+  const [appJs, styles] = await Promise.all([
+    fs.readFile("public/app.js", "utf8"),
+    fs.readFile("public/styles.css", "utf8")
+  ]);
+  assert.match(appJs, /function fastPreviewFigureMarkup\(source, envName, sourceFile\)/);
+  assert.match(appJs, /envName\.endsWith\("\*"\)/);
+  assert.match(appJs, /fast-preview-figure-grid/);
+  assert.match(appJs, /\/api\/project\/file\?path=/);
+  assert.match(appJs, /fast-preview-pdf/);
+  assert.match(appJs, /function registerFastPreviewFigures\(root\)/);
+  assert.match(appJs, /pdfjsLib\.getDocument\(\{ url \}\)/);
+  assert.match(styles, /\.fast-preview-figure-grid\s*\{/);
+  assert.match(styles, /\.fast-preview-pdf\s*\{/);
+  assert.match(styles, /grid-template-columns:\s*repeat\(var\(--preview-columns/);
+});

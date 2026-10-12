@@ -25,7 +25,8 @@ test("reference workbench preserves the current left editor and supports citatio
   assert.match(appSource, /elements\.editView\.classList\.toggle\("hidden", mode !== "edit"\)/);
   assert.match(appSource, /elements\.previewPanel\.classList\.toggle\("hidden", state\.referencesOpen\)/);
   assert.match(html, /id="closeReferencesButton"[^>]*aria-label="关闭参考文献，返回 PDF"/);
-  assert.match(html, /id="addReferenceButton"[^>]*>\s*<i data-lucide="plus"><\/i><span>新增文献<\/span>/);
+  assert.doesNotMatch(html, /id="refreshReferencesButton"|id="addReferenceButton"|id="insertSelectedReferenceButton"/);
+  assert.match(html, /id="referencesSearch"[^>]*placeholder="搜索 DOI、标题、作者、年份"/);
   assert.match(html, /id="referenceAddDialog"/);
   assert.match(html, /id="referenceAddUrl"[^>]*type="text"/);
   assert.match(html, /id="referenceAddForm"[^>]*novalidate/);
@@ -33,6 +34,9 @@ test("reference workbench preserves the current left editor and supports citatio
   assert.match(appSource, /api\("\/api\/references\/lookup"/);
   assert.match(appSource, /api\("\/api\/references\/add"/);
   assert.match(appSource, /elements\.referenceAddForm\.noValidate\s*=\s*true/);
+  assert.match(appSource, /function maybeOpenReferenceAddDialogForSearch\(\)/);
+  assert.match(appSource, /state\.referenceAutoAddQuery === query/);
+  assert.match(appSource, /openReferenceAddDialog\(query\)/);
   assert.match(appSource, /elements\.closeReferencesButton\.addEventListener\("click", \(\) => setReferencesOpen\(false\)\)/);
   assert.match(appSource, /row\.draggable = true/);
   assert.match(appSource, /event\.dataTransfer\.setData\(CITATION_DRAG_TYPE, entry\.key\)/);

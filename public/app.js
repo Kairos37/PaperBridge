@@ -1,12 +1,15 @@
 import * as pdfjsLib from "/vendor/pdfjs/pdf.mjs";
+import { marked } from "/vendor/marked/marked.esm.js";
+import { graphicsCommands, graphicsSearchPaths, resolveGraphicPath } from "./latex-graphics.js";
+import { createFormulaLatex, createTableLatex, parseLatexTable } from "./latex-structures.js";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.mjs";
 
 const MAX_TERMINOLOGY_ENTRIES = 48;
+const MAX_FIGURE_IMAGE_COUNT = 24;
 const MAX_PARALLEL_SEGMENT_TRANSLATIONS = 6;
 const CITATION_DRAG_TYPE = "application/x-paperbridge-citation";
 const UNDO_TRACKED_URLS = new Set([
-  "/api/format/apply",
   "/api/project/bibliography/migrate",
   "/api/references/add",
   "/api/project/modularize/apply",
@@ -16,6 +19,7 @@ const UNDO_TRACKED_URLS = new Set([
   "/api/math-block/move",
   "/api/table-block",
   "/api/figure/insert",
+  "/api/structure/insert",
   "/api/segment/chinese",
   "/api/segment/translate",
   "/api/segment/add",
@@ -60,6 +64,8 @@ const state = {
   fastPreviewTimer: 0,
   fastPreviewToken: 0,
   fastPreviewMathObserver: null,
+  fastPreviewFigureObserver: null,
+  fastPreviewGraphicsPaths: [],
   pdfRenderToken: 0,
   pdfDocument: null,
   pdfObserver: null,
@@ -82,12 +88,11 @@ const state = {
   pdfExportToken: 0,
   buildPreviewAvailable: null,
   compileInFlight: false,
-  formatFiles: [],
-  formatJob: null,
   editorFontSize: Math.min(20, Math.max(14, Number(localStorage.getItem("paperBridge.editorFontSize") || 16))),
   bilingualSplit: Math.min(70, Math.max(30, Number(localStorage.getItem("paperBridge.bilingualSplit") || 50))),
   workspaceSplit: Math.min(72, Math.max(32, Number(localStorage.getItem("paperBridge.workspaceSplit") || 54))),
   resizeFrame: 0,
+  segmentResizeObserver: null,
   projectRefreshTimer: 0,
   setupMode: "initial",
   storageRootSelected: false,
@@ -119,12 +124,17 @@ const state = {
   sourceSearchMatches: [],
   sourceSearchIndex: -1,
   sourceHighlightTimer: 0,
+  figureSelectedSlot: 0,
+  figureSlots: [],
+  figureNumberInputChanged: false,
+  structureType: "figure",
+  formulaMathfield: null,
   references: null,
   selectedReferenceKey: "",
+  referenceAutoAddQuery: "",
+  referenceSearchTimer: 0,
   citationTarget: null,
   structurePreview: null,
-  formatPreflightPreview: null,
-  formatPreflightResolver: null,
   compileDiagnosisToken: 0,
   compileDiagnosisFingerprint: "",
   dismissedBuildDrawerFingerprint: "",
@@ -151,6 +161,8 @@ const elements = {
   projectSwitcherList: document.querySelector("#projectSwitcherList"),
   documentCount: document.querySelector("#documentCount"),
   documentList: document.querySelector("#documentList"),
+  sectionCount: document.querySelector("#sectionCount"),
+  sectionList: document.querySelector("#sectionList"),
   translationProgress: document.querySelector("#translationProgress"),
   translationProgressBar: document.querySelector("#translationProgressBar"),
   terminologyButton: document.querySelector("#terminologyButton"),
@@ -171,6 +183,7 @@ const elements = {
   pageStatus: document.querySelector("#pageStatus"),
   pdfScroll: document.querySelector("#pdfScroll"),
   previewPanel: document.querySelector(".preview-panel"),
+  previewTitle: document.querySelector("#previewTitle"),
   previewModeLabel: document.querySelector("#previewModeLabel"),
   previewCompileButton: document.querySelector("#previewCompileButton"),
   exportPdfButton: document.querySelector("#exportPdfButton"),
@@ -187,9 +200,17 @@ const elements = {
   compileDiagnosisList: document.querySelector("#compileDiagnosisList"),
   editView: document.querySelector("#editView"),
   sourceView: document.querySelector("#sourceView"),
+  sourceViewTitle: document.querySelector("#sourceViewTitle"),
+  sourceFileControl: document.querySelector("#sourceFileControl"),
   sourceFocusButton: document.querySelector("#sourceFocusButton"),
   sourceCreateTexButton: document.querySelector("#sourceCreateTexButton"),
   sourceFileSelect: document.querySelector("#sourceFileSelect"),
+  sourceEditorShell: document.querySelector(".source-editor-shell"),
+  projectFilePreview: document.querySelector("#projectFilePreview"),
+  projectFilePreviewTitle: document.querySelector("#projectFilePreviewTitle"),
+  projectFilePreviewMeta: document.querySelector("#projectFilePreviewMeta"),
+  projectFilePreviewBody: document.querySelector("#projectFilePreviewBody"),
+  closeProjectFilePreviewButton: document.querySelector("#closeProjectFilePreviewButton"),
   sourceEditor: document.querySelector("#sourceEditor"),
   sourceHighlightLayer: document.querySelector("#sourceHighlightLayer"),
   sourceLineNumbers: document.querySelector("#sourceLineNumbers"),
@@ -203,6 +224,7 @@ const elements = {
   newTexInsertionNote: document.querySelector("#newTexInsertionNote"),
   submitCreateTexButton: document.querySelector("#submitCreateTexButton"),
   insertFigureSourceButton: document.querySelector("#insertFigureSourceButton"),
+  sourceInsertMenu: document.querySelector("#sourceInsertMenu"),
   modularizeButton: document.querySelector("#modularizeButton"),
   sourceSearchInput: null,
   sourceSearchCount: null,
@@ -214,20 +236,7 @@ const elements = {
   referencesAlerts: document.querySelector("#referencesAlerts"),
   referencesList: document.querySelector("#referencesList"),
   referenceDetail: document.querySelector("#referenceDetail"),
-  refreshReferencesButton: document.querySelector("#refreshReferencesButton"),
-  insertSelectedReferenceButton: document.querySelector("#insertSelectedReferenceButton"),
   closeReferencesButton: document.querySelector("#closeReferencesButton"),
-  formatView: document.querySelector("#formatView"),
-  formatMeta: document.querySelector("#formatMeta"),
-  formatRequirements: document.querySelector("#formatRequirements"),
-  formatFileList: document.querySelector("#formatFileList"),
-  formatAnalysisSection: document.querySelector("#formatAnalysisSection"),
-  formatTargetName: document.querySelector("#formatTargetName"),
-  formatAnalysisSummary: document.querySelector("#formatAnalysisSummary"),
-  formatStatus: document.querySelector("#formatStatus"),
-  formatWorkflow: document.querySelector("#formatWorkflow"),
-  formatDifferenceList: document.querySelector("#formatDifferenceList"),
-  formatWarningList: document.querySelector("#formatWarningList"),
   setupDialog: document.querySelector("#setupDialog"),
   setupForm: document.querySelector("#setupForm"),
   setupMessage: document.querySelector("#setupMessage"),
@@ -246,9 +255,37 @@ const elements = {
   figureAnchorMeta: document.querySelector("#figureAnchorMeta"),
   figureImagesInput: document.querySelector("#figureImagesInput"),
   figurePlacementInput: document.querySelector("#figurePlacementInput"),
+  figureLayoutSummary: document.querySelector("#figureLayoutSummary"),
+  figureSpanInput: document.querySelector("#figureSpanInput"),
+  figureAlignmentInput: document.querySelector("#figureAlignmentInput"),
+  figureArrangementInput: document.querySelector("#figureArrangementInput"),
+  figureImageCountInput: document.querySelector("#figureImageCountInput"),
+  figureColumnsInput: document.querySelector("#figureColumnsInput"),
+  figurePositionInput: document.querySelector("#figurePositionInput"),
+  figureGrid: document.querySelector("#figureGrid"),
+  chooseExternalFigureButton: document.querySelector("#chooseExternalFigureButton"),
+  figureExternalInput: document.querySelector("#figureExternalInput"),
   figureCaptionInput: document.querySelector("#figureCaptionInput"),
   figureLabelInput: document.querySelector("#figureLabelInput"),
   insertFigureSubmitButton: document.querySelector("#insertFigureSubmitButton"),
+  structureDialogTitle: document.querySelector("#structureDialogTitle"),
+  structureTypeInput: document.querySelector("#structureTypeInput"),
+  figureOptions: document.querySelector("#figureOptions"),
+  tableOptions: document.querySelector("#tableOptions"),
+  formulaOptions: document.querySelector("#formulaOptions"),
+  insertTableRows: document.querySelector("#insertTableRows"),
+  insertTableColumns: document.querySelector("#insertTableColumns"),
+  insertTableSpan: document.querySelector("#insertTableSpan"),
+  insertTableBorder: document.querySelector("#insertTableBorder"),
+  insertTableGrid: document.querySelector("#insertTableGrid"),
+  insertTableCaption: document.querySelector("#insertTableCaption"),
+  insertTableLabel: document.querySelector("#insertTableLabel"),
+  formulaPalette: document.querySelector("#formulaPalette"),
+  formulaMathfieldShell: document.querySelector("#formulaMathfieldShell"),
+  formulaKeyboard: document.querySelector("#formulaKeyboard"),
+  insertFormulaNumbered: document.querySelector("#insertFormulaNumbered"),
+  insertFormulaLabel: document.querySelector("#insertFormulaLabel"),
+  insertFormulaLatex: document.querySelector("#insertFormulaLatex"),
   gitManagerDialog: document.querySelector("#gitManagerDialog"),
   gitManagerProjectMeta: document.querySelector("#gitManagerProjectMeta"),
   gitRemoteList: document.querySelector("#gitRemoteList"),
@@ -284,12 +321,6 @@ const elements = {
   structureWarning: document.querySelector("#structureWarning"),
   applyStructureButton: document.querySelector("#applyStructureButton"),
   migrateBibliographyButton: document.querySelector("#migrateBibliographyButton"),
-  formatPreflightDialog: document.querySelector("#formatPreflightDialog"),
-  formatPreflightSummary: document.querySelector("#formatPreflightSummary"),
-  formatPreflightFlow: document.querySelector("#formatPreflightFlow"),
-  formatPreflightWarning: document.querySelector("#formatPreflightWarning"),
-  splitForFormatButton: document.querySelector("#splitForFormatButton"),
-  continueWithoutSplitButton: document.querySelector("#continueWithoutSplitButton"),
   terminologyDialog: document.querySelector("#terminologyDialog"),
   terminologyMeta: document.querySelector("#terminologyMeta"),
   terminologySearch: document.querySelector("#terminologySearch"),
@@ -316,7 +347,6 @@ const elements = {
   referenceAddSubmitButton: document.querySelector("#addReferenceButtonSubmit"),
   closeReferenceAddButton: document.querySelector("#closeReferenceAddButton"),
   cancelReferenceAddButton: document.querySelector("#cancelReferenceAddButton"),
-  addReferenceButton: document.querySelector("#addReferenceButton"),
   toastRegion: document.querySelector("#toastRegion")
 };
 
@@ -329,7 +359,7 @@ function fitSegmentRow(row) {
   const english = row.querySelector(".segment-textarea.english");
   if (!chinese || !english) return;
   chinese.style.height = "auto";
-  const height = Math.max(196, chinese.scrollHeight + 2);
+  const height = Math.max(196, Math.ceil(chinese.scrollHeight) + 4);
   chinese.style.height = `${height}px`;
   english.style.height = `${height}px`;
 }
@@ -339,6 +369,12 @@ function fitAllSegmentRows() {
   state.resizeFrame = window.requestAnimationFrame(() => {
     elements.segmentList.querySelectorAll(".segment-row").forEach(fitSegmentRow);
   });
+}
+
+function observeSegmentEditorSize() {
+  if (state.segmentResizeObserver || typeof ResizeObserver === "undefined") return;
+  state.segmentResizeObserver = new ResizeObserver(() => fitAllSegmentRows());
+  state.segmentResizeObserver.observe(elements.segmentList);
 }
 
 function applyEditorPreferences(persist = true) {
@@ -370,6 +406,7 @@ function applyWorkspaceSplit(persist = true) {
   document.documentElement.style.setProperty("--workspace-preview-share", `${100 - state.workspaceSplit}fr`);
   elements.workspaceSplitHandle.setAttribute("aria-valuenow", String(Math.round(state.workspaceSplit)));
   if (persist) localStorage.setItem("paperBridge.workspaceSplit", String(state.workspaceSplit));
+  fitAllSegmentRows();
   schedulePdfPanelResize(anchor);
 }
 
@@ -1182,7 +1219,7 @@ async function submitSetup(event) {
           : "",
         preserveProviders: state.setupMode === "switch",
         translation,
-        format: { ...translation }
+        diagnosis: { ...translation }
       })
     });
     elements.setupDialog.close();
@@ -2933,6 +2970,17 @@ function renderReferenceDetail(entry = selectedReference()) {
   elements.referenceDetail.append(header, summary, fields, sourceLabel, source);
 }
 
+function maybeOpenReferenceAddDialogForSearch() {
+  const query = String(elements.referencesSearch?.value || "").trim();
+  if (!query || !state.references || getVisibleReferences(query).length || elements.referenceAddDialog?.open) {
+    if (!query || getVisibleReferences(query).length) state.referenceAutoAddQuery = "";
+    return;
+  }
+  if (state.referenceAutoAddQuery === query) return;
+  state.referenceAutoAddQuery = query;
+  openReferenceAddDialog(query);
+}
+
 function renderReferences() {
   const payload = state.references;
   const total = payload?.entries?.length || 0;
@@ -2957,9 +3005,10 @@ function renderReferenceAddBibFiles(files = [], selected = "") {
   }
 }
 
-function openReferenceAddDialog() {
+function openReferenceAddDialog(initialQuery = "") {
   if (!elements.referenceAddDialog) return;
   elements.referenceAddForm?.reset();
+  elements.referenceAddUrl.value = String(initialQuery || "").trim();
   elements.referenceAddBib.value = "";
   elements.referenceAddKey.value = "";
   elements.referenceAddStatus.textContent = "粘贴 DOI、arXiv、IEEE 或普通网页链接，然后获取元数据。";
@@ -2969,6 +3018,7 @@ function openReferenceAddDialog() {
 }
 
 function closeReferenceAddDialog() {
+  state.referenceAutoAddQuery = "";
   if (elements.referenceAddDialog?.open) elements.referenceAddDialog.close();
 }
 
@@ -3268,38 +3318,235 @@ function attachCitationTarget(textarea) {
   });
 }
 
+const PROJECT_PREVIEW_EXTENSIONS = new Set([
+  ".pdf", ".png", ".jpg", ".jpeg", ".svg", ".eps", ".gif", ".webp", ".bmp", ".tif", ".tiff"
+]);
+
+function projectFileDepth(file) {
+  return Math.max(0, String(file || "").split("/").length - 1);
+}
+
+function projectFileIcon(entry) {
+  if (entry.type === "directory") return "folder";
+  if (PROJECT_PREVIEW_EXTENSIONS.has(String(entry.extension || "").toLowerCase())) return "image";
+  if (String(entry.extension || "").toLowerCase() === ".bib") return "book-open";
+  return "file-text";
+}
+
+function showSourceEditor() {
+  elements.sourceEditorShell?.classList.remove("hidden");
+  elements.projectFilePreview?.classList.add("hidden");
+}
+
+async function openProjectFile(file) {
+  const relative = String(file || "").replaceAll("\\", "/");
+  if (!relative) return;
+  if (/\.(?:tex|bib|md|markdown)$/i.test(relative)) {
+    showSourceEditor();
+    if (state.mode !== "source" && !setMode("source", { loadCurrent: false })) return;
+    renderSourceFileOptions(relative);
+    await loadSourceFile(relative);
+    return;
+  }
+  if (state.sourceDirty && !confirmDiscardSourceChanges()) return;
+  if (state.mode !== "source" && !setMode("source", { loadCurrent: false })) return;
+  const entry = (state.project?.projectFiles || []).find((candidate) => candidate.path === relative);
+  if (!entry) return;
+  const extension = String(entry.extension || "").toLowerCase();
+  elements.sourceEditorShell?.classList.add("hidden");
+  elements.projectFilePreview?.classList.remove("hidden");
+  elements.projectFilePreviewTitle.textContent = relative;
+  elements.projectFilePreviewMeta.textContent = entry.previewable ? "项目文件预览" : "文件预览不可用，可在资源管理器中打开";
+  elements.projectFilePreviewBody.replaceChildren();
+  const url = `/api/project/file?path=${encodeURIComponent(relative)}`;
+  if (extension === ".pdf") {
+    const frame = document.createElement("iframe");
+    frame.src = `${url}#toolbar=0&navpanes=0`;
+    frame.title = relative;
+    elements.projectFilePreviewBody.append(frame);
+  } else if (PROJECT_PREVIEW_EXTENSIONS.has(extension)) {
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = relative;
+    image.loading = "lazy";
+    elements.projectFilePreviewBody.append(image);
+  } else {
+    const note = document.createElement("div");
+    note.className = "project-file-preview-note";
+    note.textContent = "此文件没有内置预览。图片插入面板仍可直接选择项目中的资源文件。";
+    elements.projectFilePreviewBody.append(note);
+  }
+  renderSectionList();
+  updateTopbarCurrentFile(relative);
+}
+
 function renderDocumentList() {
+  const entries = Array.isArray(state.project?.projectFiles) ? state.project.projectFiles : [];
   const documents = state.project.documents || [];
   const documentByFile = new Map(documents.map((item) => [item.file, item]));
-  const files = (state.project.sourceFiles || []).filter((file) => file.toLowerCase().endsWith(".tex"));
-  const visibleFiles = files.length ? files : documents.map((item) => item.file);
-  elements.documentCount.textContent = String(visibleFiles.length);
+  elements.documentCount.textContent = String(entries.length);
   elements.documentList.replaceChildren();
-  for (const file of visibleFiles) {
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "project-file-empty";
+    empty.textContent = "项目中暂无文件";
+    elements.documentList.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const file = entry.path;
     const item = documentByFile.get(file);
     const button = document.createElement("button");
-    button.className = `document-button ${file === state.currentFile || (state.mode === "source" && file === state.sourceFile) ? "active" : ""}`;
+    button.className = `document-button ${entry.type === "directory" ? "folder" : "file"} ${file === state.currentFile || (state.mode === "source" && file === state.sourceFile) ? "active" : ""}`;
     button.type = "button";
+    button.style.paddingLeft = `${8 + projectFileDepth(file) * 14}px`;
     button.innerHTML = `
-      <i data-lucide="file-text"></i>
+      <i data-lucide="${projectFileIcon(entry)}"></i>
       <span class="document-label"></span>
       <span class="document-progress"></span>
     `;
-    button.querySelector(".document-label").textContent = fileLabel(file);
-    button.querySelector(".document-progress").textContent = item ? `${item.translated}/${item.segments}` : "TeX";
-    button.addEventListener("click", async () => {
-      if (item) {
-        await loadDocument(file);
-        return;
-      }
-      if (!setMode("source", { loadCurrent: false })) return;
-      renderSourceFileOptions(file);
-      await loadSourceFile(file, { force: true });
-      renderDocumentList();
-    });
+    button.querySelector(".document-label").textContent = file;
+    button.querySelector(".document-progress").textContent = entry.type === "directory"
+      ? "文件夹"
+      : item ? `${item.translated}/${item.segments}` : (entry.extension || "文件");
+    button.title = file;
+    if (entry.type === "file") {
+      button.addEventListener("click", async () => {
+        if (item && state.mode === "edit") {
+          await loadDocument(file);
+          return;
+        }
+        await openProjectFile(file);
+        renderDocumentList();
+      });
+    } else {
+      button.disabled = true;
+    }
     elements.documentList.append(button);
   }
   updateTranslationProgress();
+  refreshIcons();
+}
+
+function sourceHeadingEntries(file, content) {
+  const normalizedFile = String(file || "").replaceAll("\\", "/");
+  const lines = String(content || "").split(/\r?\n/);
+  const attachDocumentTargets = (entries) => entries.map((entry) => {
+    const segment = state.currentDocument?.file === normalizedFile
+      ? state.currentDocument.segments.find((candidate) => (
+        Array.isArray(candidate.headingPath) && candidate.headingPath.some((heading) => (
+          (heading.id || `${normalizedFile}:heading:${heading.line}`) === entry.id
+        ))
+      ))
+      : null;
+    return {
+      ...entry,
+      segmentId: segment?.id || "",
+      sectionId: segment?.sectionId || ""
+    };
+  });
+  if (/\.(?:md|markdown)$/i.test(normalizedFile)) {
+    return attachDocumentTargets(lines.flatMap((line, index) => {
+      const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (!match) return [];
+      return [{
+        id: `${normalizedFile}:heading:${index + 1}`,
+        file: normalizedFile,
+        line: index + 1,
+        level: match[1].length,
+        title: match[2].trim()
+      }];
+    }));
+  }
+  return attachDocumentTargets(lines.flatMap((line, index) => {
+    if (/^\s*%/.test(line)) return [];
+    const match = line.match(/^\s*\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}/);
+    if (!match) return [];
+    return [{
+      id: `${normalizedFile}:heading:${index + 1}`,
+      file: normalizedFile,
+      line: index + 1,
+      level: ["chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph"].indexOf(match[1]) + 1,
+      title: match[2].trim()
+    }];
+  }));
+}
+
+function documentHeadingEntries(documentPayload) {
+  const entries = [];
+  const seen = new Set();
+  for (const segment of documentPayload?.segments || []) {
+    const path = Array.isArray(segment.headingPath) ? segment.headingPath : [];
+    for (const heading of path) {
+      const id = heading.id || `${documentPayload.file}:heading:${heading.line}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      entries.push({
+        id,
+        file: documentPayload.file,
+        line: heading.line,
+        level: heading.level,
+        title: heading.title,
+        segmentId: segment.id,
+        sectionId: segment.sectionId
+      });
+    }
+  }
+  return entries.sort((left, right) => Number(left.line || 0) - Number(right.line || 0));
+}
+
+function renderSectionList() {
+  if (!elements.sectionList) return;
+  let sections = [];
+  const previewingProjectFile = elements.projectFilePreview && !elements.projectFilePreview.classList.contains("hidden");
+  const currentSourceMatchesDocument = state.sourceFile
+    && state.sourceFile === (state.currentFile || state.currentDocument?.file);
+  if (!previewingProjectFile && state.sourceFile && (state.mode === "source" || currentSourceMatchesDocument)) {
+    sections = sourceHeadingEntries(state.sourceFile, elements.sourceEditor?.value || "");
+  } else if (!previewingProjectFile && state.currentDocument) {
+    sections = documentHeadingEntries(state.currentDocument);
+  }
+  elements.sectionCount.textContent = String(sections.length);
+  elements.sectionList.replaceChildren();
+  if (!sections.length) {
+    const empty = document.createElement("div");
+    empty.className = "project-file-empty";
+    empty.textContent = "当前文件没有检测到章节或小节";
+    elements.sectionList.append(empty);
+    return;
+  }
+  for (const section of sections) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "section-item";
+    button.style.paddingLeft = `${10 + Math.max(0, Number(section.level || 1) - 1) * 14}px`;
+    button.title = `${section.title} · L${section.line}`;
+    button.innerHTML = '<i data-lucide="list-tree"></i><span class="section-item-title"></span><span class="section-item-line"></span>';
+    button.querySelector(".section-item-title").textContent = section.title || "未命名章节";
+    button.querySelector(".section-item-line").textContent = `L${section.line}`;
+    button.addEventListener("click", async () => {
+      if (state.mode === "source") {
+        await openSourceLocation(section.file, section.line);
+        return;
+      }
+      const row = section.segmentId
+        ? [...elements.segmentList.querySelectorAll(".segment-row")].find((candidate) => candidate.dataset.segmentId === section.segmentId)
+        : null;
+      if (row) {
+        row.classList.remove("pdf-located");
+        void row.offsetWidth;
+        row.classList.add("pdf-located");
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        window.setTimeout(() => row.classList.remove("pdf-located"), 2200);
+      }
+      if (section.sectionId && state.currentDocument?.segments.some((segment) => segment.sectionId === section.sectionId)) {
+        state.currentSectionId = section.sectionId;
+        if (elements.translationSectionSelect) elements.translationSectionSelect.value = section.sectionId;
+        updateTranslateSectionButton();
+      }
+    });
+    elements.sectionList.append(button);
+  }
   refreshIcons();
 }
 
@@ -3535,6 +3782,45 @@ function renderFastPreviewText(source) {
     .replace(/\n/g, "<br>");
 }
 
+function fastPreviewFigurePath(value, sourceFile, command) {
+  return resolveGraphicPath(value, {
+    files: state.project?.projectFiles || [],
+    sourceFile,
+    mainFile: state.project?.config?.mainTex || "",
+    searchPaths: state.fastPreviewGraphicsPaths,
+    command
+  });
+}
+
+function fastPreviewFigureMarkup(source, envName, sourceFile) {
+  const escapedEnvName = envName.endsWith("*") ? `${envName.slice(0, -1)}\\*` : envName;
+  const body = String(source || "")
+    .replace(new RegExp(`^\\\\begin\\{${escapedEnvName}\\}(?:\\[[^\\]]*\\])?\\s*`), "")
+    .replace(new RegExp(`\\\\end\\{${escapedEnvName}\\}\\s*$`), "");
+  const images = graphicsCommands(body)
+    .filter((item) => item.command !== "graphicspath")
+    .map((item) => fastPreviewFigurePath(item.value, sourceFile, item.command))
+    .filter(Boolean);
+  const minipages = [...body.matchAll(/\\begin\{minipage\}\{([^{}]*)\}/g)].length;
+  const columns = Math.min(4, Math.max(1, minipages || images.length || 1));
+  const alignment = /\\raggedright/.test(body) ? "left" : /\\raggedleft/.test(body) ? "right" : "center";
+  const caption = extractLatexCommandArgument(body, "caption");
+  const cells = images.length ? images.map((file) => {
+    const extension = file.slice(file.lastIndexOf(".")).toLowerCase();
+    const label = fastPreviewEscape(file);
+    const url = `/api/project/file?path=${encodeURIComponent(file)}`;
+    if (extension === ".pdf") {
+      return `<div class="fast-preview-figure-cell pdf"><canvas class="fast-preview-pdf" data-pdf-url="${fastPreviewEscape(url)}" aria-label="${label}"></canvas><span>${label}</span></div>`;
+    }
+    if (extension === ".eps") {
+      return `<div class="fast-preview-figure-cell pdf"><span class="fast-preview-figure-file-badge">EPS</span><span>${label}</span></div>`;
+    }
+    return `<div class="fast-preview-figure-cell"><img src="${url}" alt="${label}" loading="lazy"><span>${label}</span></div>`;
+  }).join("") : `<div class="fast-preview-figure-cell empty"><span>未识别到图片命令</span></div>`;
+  const sourceLabel = sourceFile ? ` data-source-file="${fastPreviewEscape(sourceFile)}"` : "";
+  return `<figure class="fast-preview-figure ${envName.endsWith("*") ? "span" : ""}" style="--preview-columns:${columns};--preview-align:${alignment}"${sourceLabel}><div class="fast-preview-figure-grid">${cells}</div>${caption ? `<figcaption>${renderFastPreviewInline(caption)}</figcaption>` : ""}</figure>`;
+}
+
 function fastPreviewIsEscaped(source, index) {
   let count = 0;
   for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) count += 1;
@@ -3668,6 +3954,24 @@ function updateFastPreviewPaperHeader(documentNode, source) {
   return header;
 }
 
+function renderFastPreviewTable(source, envName = "table") {
+  const table = parseLatexTable(source);
+  if (!table?.rows?.length) {
+    return `<div class="fast-preview-table fast-preview-table-empty"><span>未识别到表格内容</span></div>`;
+  }
+  const columns = Math.max(table.columns.length, ...table.rows.map((row) => row.length));
+  const cells = table.rows.map((row, rowIndex) => {
+    const tag = rowIndex === 0 ? "th" : "td";
+    return `<tr>${row.map((cell) => {
+      const span = cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
+      const rowSpan = cell.rowspan > 1 ? ` rowspan="${cell.rowspan}"` : "";
+      return `<${tag}${span}${rowSpan}>${renderFastPreviewInline(cell.source)}</${tag}>`;
+    }).join("")}</tr>`;
+  }).join("");
+  const caption = table.caption ? `<figcaption>${renderFastPreviewInline(table.caption)}</figcaption>` : "";
+  return `<figure class="fast-preview-table ${envName.endsWith("*") ? "span" : ""}" style="--preview-table-columns:${columns}"><div class="fast-preview-table-scroll"><table>${cells}</table></div>${caption}</figure>`;
+}
+
 function renderFastPreviewBlock(block) {
   const source = block.source.trim();
   const section = source.match(/^\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\{([^{}]*)\}/);
@@ -3686,7 +3990,11 @@ function renderFastPreviewBlock(block) {
     html = `<p class="fast-preview-abstract">${first ? '<strong class="fast-preview-abstract-label">Abstract—</strong>' : ""}${renderFastPreviewInline(body)}</p>`;
   } else if (/^\\begin\{/.test(source)) {
     const envName = source.match(/^\\begin\{([^{}]+)\}/)?.[1] || "environment";
-    if (/^(equation|align|gather|multline|alignat|flalign)\*?$/.test(envName)) {
+    if (/^figure\*?$/.test(envName)) {
+      html = fastPreviewFigureMarkup(source, envName, block.file);
+    } else if (/^table\*?$/.test(envName) || /^tabular\*?$/.test(envName)) {
+      html = renderFastPreviewTable(source, envName);
+    } else if (/^(equation|align|gather|multline|alignat|flalign)\*?$/.test(envName)) {
       html = renderFastPreviewMath(fastPreviewMathEnvironment(source, envName), { display: true, envName });
     } else {
       html = `<div class="fast-preview-env"><strong>${fastPreviewEscape(envName)}</strong><br>${renderFastPreviewInline(source)}</div>`;
@@ -3704,16 +4012,125 @@ function renderFastPreviewBlock(block) {
   };
 }
 
+const MARKDOWN_ALLOWED_TAGS = new Set([
+  "A", "BLOCKQUOTE", "BR", "CODE", "DEL", "EM", "H1", "H2", "H3", "H4", "H5", "H6",
+  "HR", "IMG", "LI", "OL", "P", "PRE", "STRONG", "SUB", "SUP", "TABLE", "TBODY", "TD",
+  "TH", "THEAD", "TR", "UL"
+]);
+
+function markdownProjectPath(value, sourceFile) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) return "";
+  try {
+    const baseDir = String(sourceFile || "").replaceAll("\\", "/").split("/").slice(0, -1).join("/");
+    const resolved = new URL(raw, `https://paperbridge.local/${baseDir ? `${baseDir}/` : ""}`);
+    const relative = decodeURIComponent(resolved.pathname).replace(/^\/+/, "");
+    const match = (state.project?.projectFiles || []).find((entry) => (
+      entry.type === "file" && entry.path.toLowerCase() === relative.toLowerCase()
+    ));
+    return match?.path || "";
+  } catch {
+    return "";
+  }
+}
+
+function prepareMarkdownPreview(html, sourceFile) {
+  const template = document.createElement("template");
+  template.innerHTML = String(html || "");
+  for (const element of [...template.content.querySelectorAll("*")]) {
+    if (!MARKDOWN_ALLOWED_TAGS.has(element.tagName)) {
+      element.replaceWith(...element.childNodes);
+      continue;
+    }
+    const href = element.getAttribute("href") || "";
+    const src = element.getAttribute("src") || "";
+    const alt = element.getAttribute("alt") || "";
+    const title = element.getAttribute("title") || "";
+    const languageClass = element.tagName === "CODE"
+      ? [...element.classList].find((name) => /^language-[a-z0-9_-]+$/i.test(name)) || ""
+      : "";
+    for (const attribute of [...element.attributes]) element.removeAttribute(attribute.name);
+    if (languageClass) element.className = languageClass;
+    if (title) element.title = title;
+    if (element.tagName === "IMG") {
+      const projectPath = markdownProjectPath(src, sourceFile);
+      if (projectPath) element.src = `/api/project/file?path=${encodeURIComponent(projectPath)}`;
+      else if (/^https?:\/\//i.test(src) || /^data:image\//i.test(src)) element.src = src;
+      else element.replaceWith(document.createTextNode(alt || src || "图片"));
+      if (element.isConnected || element.parentNode) element.alt = alt;
+    }
+    if (element.tagName === "A") {
+      const projectPath = markdownProjectPath(href, sourceFile);
+      if (projectPath && /\.(?:md|markdown)$/i.test(projectPath)) {
+        element.href = "#";
+        element.dataset.markdownFile = projectPath;
+      } else if (/^https?:\/\//i.test(href)) {
+        element.href = href;
+        element.target = "_blank";
+        element.rel = "noopener noreferrer";
+      } else if (href.startsWith("#")) {
+        element.href = href;
+      }
+    }
+  }
+  return template.content;
+}
+
+async function renderMarkdownPreview(file = state.sourceFile) {
+  const sourceFile = String(file || state.sourceFile || "");
+  if (!isMarkdownFile(sourceFile)) return;
+  const token = ++state.fastPreviewToken;
+  window.clearTimeout(state.fastPreviewTimer);
+  state.fastPreviewTimer = 0;
+  setPreviewMode("markdown");
+  resetPdfRenderer();
+  const source = state.sourceFile === sourceFile
+    ? { file: sourceFile, content: elements.sourceEditor.value }
+    : await api(`/api/source?file=${encodeURIComponent(sourceFile)}`);
+  if (token !== state.fastPreviewToken) return;
+  const documentNode = document.createElement("article");
+  documentNode.className = "markdown-preview-document";
+  const rendered = marked.parse(source.content, { gfm: true, breaks: false });
+  documentNode.append(prepareMarkdownPreview(rendered, source.file));
+  if (!documentNode.textContent.trim() && !documentNode.querySelector("img")) {
+    documentNode.innerHTML = '<p class="markdown-preview-empty">开始在左侧输入 Markdown，预览会在这里实时更新。</p>';
+  }
+  documentNode.querySelectorAll("a[data-markdown-file]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      void openProjectFile(link.dataset.markdownFile);
+    });
+  });
+  elements.pdfScroll.replaceChildren(documentNode);
+  state.fastPreviewFile = source.file;
+  state.fastPreviewCache = [];
+  const lines = source.content.split(/\r?\n/).length;
+  elements.pageStatus.textContent = `Markdown 实时预览 · ${lines} 行`;
+}
+
+function scheduleMarkdownPreview(file = state.sourceFile, delay = 80) {
+  setPreviewMode("markdown");
+  window.clearTimeout(state.fastPreviewTimer);
+  state.fastPreviewTimer = window.setTimeout(() => {
+    void renderMarkdownPreview(file).catch((error) => toast(error.message, "error", 5200));
+  }, delay);
+}
+
 function setPreviewMode(mode) {
   state.previewMode = mode;
   elements.previewPanel.dataset.previewMode = mode;
-  if (mode === "fast") elements.previewPanel.classList.remove("compile-failed", "compile-running");
-  elements.previewModeLabel.textContent = mode === "pdf" ? "正式 PDF" : "快速预览";
+  if (mode !== "pdf") elements.previewPanel.classList.remove("compile-failed", "compile-running");
+  elements.previewTitle.textContent = mode === "markdown" ? "Markdown 预览" : "英文排版";
+  elements.previewModeLabel.textContent = mode === "pdf" ? "正式 PDF" : mode === "markdown" ? "Markdown" : "快速预览";
   elements.pdfScroll.classList.toggle("fast-preview-scroll", mode === "fast");
   elements.pdfScroll.classList.toggle("pdf-preview-scroll", mode === "pdf");
+  elements.pdfScroll.classList.toggle("markdown-preview-scroll", mode === "markdown");
   if (mode === "fast") {
     elements.visiblePage.textContent = "—";
     elements.pageStatus.textContent = "快速预览";
+  } else if (mode === "markdown") {
+    elements.visiblePage.textContent = "—";
+    elements.pageStatus.textContent = "Markdown 实时预览";
   }
 }
 
@@ -3721,6 +4138,8 @@ function resetPdfRenderer() {
   state.pdfRenderToken += 1;
   state.pdfObserver?.disconnect();
   state.pdfObserver = null;
+  state.fastPreviewFigureObserver?.disconnect();
+  state.fastPreviewFigureObserver = null;
   for (const task of state.pdfPageRenderTasks.values()) task.cancel();
   state.pdfPageRenderTasks.clear();
   for (const entry of state.pdfTextLayers.values()) if (!entry.ready) entry.task.cancel();
@@ -3801,6 +4220,16 @@ async function fastPreviewSource(file = "") {
   const mainTex = state.project?.config?.mainTex || "";
   if (sourceFile === mainTex) {
     source.parts = await resolveFastPreviewParts(source.file, source.content);
+    source.graphicsPaths = graphicsSearchPaths(source.parts.map((part) => part.content).join("\n"));
+  } else {
+    let inherited = [];
+    if (mainTex && graphicsCommands(source.content).some((item) => item.command !== "graphicspath")) {
+      const mainSource = state.sourceDirty && state.sourceFile === mainTex
+        ? { content: elements.sourceEditor.value }
+        : await api(`/api/source?file=${encodeURIComponent(mainTex)}`);
+      inherited = graphicsSearchPaths(mainSource.content);
+    }
+    source.graphicsPaths = graphicsSearchPaths(source.content, inherited);
   }
   return source;
 }
@@ -3846,6 +4275,49 @@ function registerFastPreviewMath(root) {
   root.querySelectorAll(".math-pending").forEach((node) => state.fastPreviewMathObserver.observe(node));
 }
 
+function registerFastPreviewFigures(root) {
+  state.fastPreviewFigureObserver?.disconnect();
+  const nodes = [...root.querySelectorAll(".fast-preview-pdf[data-pdf-url]")];
+  if (!nodes.length) return;
+  const renderPdfFigure = async (canvas) => {
+    const url = canvas.dataset.pdfUrl;
+    try {
+      const pdf = await pdfjsLib.getDocument({ url }).promise;
+      const page = await pdf.getPage(1);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const parentWidth = Math.max(180, canvas.parentElement?.clientWidth || 320);
+      const scale = Math.min(1.5, Math.max(0.35, parentWidth / baseViewport.width));
+      const deviceScale = Math.min(2, window.devicePixelRatio || 1);
+      const viewport = page.getViewport({ scale });
+      const renderViewport = page.getViewport({ scale: scale * deviceScale });
+      canvas.width = Math.ceil(renderViewport.width);
+      canvas.height = Math.ceil(renderViewport.height);
+      canvas.style.width = `${Math.ceil(viewport.width)}px`;
+      canvas.style.height = `${Math.ceil(viewport.height)}px`;
+      await page.render({
+        canvasContext: canvas.getContext("2d"),
+        viewport: renderViewport
+      }).promise;
+      canvas.closest(".fast-preview-figure-cell")?.classList.add("rendered");
+    } catch (error) {
+      const fallback = document.createElement("span");
+      fallback.className = "fast-preview-figure-file-badge";
+      fallback.textContent = "PDF";
+      fallback.title = error.message || "PDF 快速预览失败";
+      canvas.replaceWith(fallback);
+    }
+  };
+  state.fastPreviewFigureObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const canvas = entry.target;
+      state.fastPreviewFigureObserver.unobserve(canvas);
+      void renderPdfFigure(canvas);
+    }
+  }, { root: elements.pdfScroll, rootMargin: "100% 0px" });
+  nodes.forEach((node) => state.fastPreviewFigureObserver.observe(node));
+}
+
 function applyFastPreviewPatches(nextBlocks) {
   const documentNode = elements.pdfScroll.querySelector(".fast-preview-document");
   if (!documentNode) return false;
@@ -3875,6 +4347,7 @@ function applyFastPreviewPatches(nextBlocks) {
   }
   state.fastPreviewCache = nextBlocks;
   registerFastPreviewMath(documentNode);
+  registerFastPreviewFigures(documentNode);
   return true;
 }
 
@@ -3891,6 +4364,7 @@ async function renderFastPreview(file = "") {
   try {
     const source = await fastPreviewSource(file);
     if (token !== state.fastPreviewToken) return;
+    state.fastPreviewGraphicsPaths = source.graphicsPaths || [];
     const fileChanged = state.fastPreviewFile && state.fastPreviewFile !== source.file;
     if (fileChanged) state.fastPreviewCache = [];
     const nextBlocks = splitFastPreviewSource(source).map(renderFastPreviewBlock);
@@ -3924,6 +4398,7 @@ async function renderFastPreview(file = "") {
       elements.pdfScroll.replaceChildren(documentNode);
       state.fastPreviewCache = nextBlocks;
       registerFastPreviewMath(documentNode);
+      registerFastPreviewFigures(documentNode);
     }
     const meta = elements.pdfScroll.querySelector(".fast-preview-meta");
     if (meta) meta.textContent = `${source.file} · 快速 HTML 预览，正式排版请点击“编译全文”`;
@@ -3964,6 +4439,8 @@ async function renderPdf() {
   setPreviewMode("pdf");
   elements.previewPanel.classList.remove("compile-failed", "compile-running");
   state.fastPreviewMathObserver?.disconnect();
+  state.fastPreviewFigureObserver?.disconnect();
+  state.fastPreviewFigureObserver = null;
   const token = ++state.pdfRenderToken;
   window.clearTimeout(state.pdfRenderTimer);
   state.pdfRenderTimer = 0;
@@ -4291,6 +4768,7 @@ async function refreshProject({ preserveDocument = true, remoteName = state.gitR
   }
   updateProjectHeader();
   renderDocumentList();
+  renderSectionList();
   renderSourceFileOptions(state.sourceDirty ? state.sourceFile : state.currentFile);
   if (state.previewMode === "pdf") updatePdf();
   else scheduleFastPreview(state.currentDocument?.file || state.currentFile || state.project.config?.mainTex || "");
@@ -4332,6 +4810,7 @@ async function applyProjectPayload(project, { preserveDocument = true } = {}) {
   }
   updateProjectHeader();
   renderDocumentList();
+  renderSectionList();
   renderSourceFileOptions(state.sourceDirty ? state.sourceFile : state.currentFile);
   if (!preserveDocument && state.project.documents?.length) {
     await loadDocument(state.project.documents[0].file);
@@ -5249,17 +5728,244 @@ function figureAnchorText(anchor) {
   return `${anchor.file} · P${String(Number(anchor.index || 0) + 1).padStart(2, "0")} 后方`;
 }
 
+function figureProjectImages() {
+  return (state.project?.projectFiles || [])
+    .filter((entry) => entry.type === "file")
+    .filter((entry) => PROJECT_PREVIEW_EXTENSIONS.has(String(entry.extension || "").toLowerCase()) || String(entry.extension || "").toLowerCase() === ".eps")
+    .map((entry) => entry.path);
+}
+
+function figureLayoutOptions() {
+  return {
+    span: elements.figureSpanInput.value,
+    alignment: elements.figureAlignmentInput.value,
+    arrangement: elements.figureArrangementInput.value,
+    columns: Number(elements.figureColumnsInput.value || 1),
+    position: elements.figurePositionInput.value
+  };
+}
+
+function syncFigureImageInput() {
+  elements.figureImagesInput.value = state.figureSlots.filter(Boolean).join("\n");
+}
+
+function renderInsertTableGrid() {
+  const rows = Math.min(100, Math.max(1, Number(elements.insertTableRows?.value) || 1));
+  const columns = Math.min(24, Math.max(1, Number(elements.insertTableColumns?.value) || 1));
+  if (elements.insertTableRows) elements.insertTableRows.value = String(rows);
+  if (elements.insertTableColumns) elements.insertTableColumns.value = String(columns);
+  if (!elements.insertTableGrid) return;
+  const table = document.createElement("table");
+  const body = document.createElement("tbody");
+  for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+    const row = document.createElement("tr");
+    for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+      const cell = document.createElement("td");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.dataset.row = String(rowIndex);
+      input.dataset.column = String(columnIndex);
+      input.placeholder = `${rowIndex + 1}, ${columnIndex + 1}`;
+      cell.append(input);
+      row.append(cell);
+    }
+    body.append(row);
+  }
+  table.append(body);
+  elements.insertTableGrid.replaceChildren(table);
+}
+
+function readInsertTableRows() {
+  const rows = [];
+  elements.insertTableGrid?.querySelectorAll("tr").forEach((row) => {
+    rows.push([...row.querySelectorAll("input")].map((input) => input.value));
+  });
+  return rows;
+}
+
+async function ensureFormulaEditor() {
+  if (!elements.formulaMathfieldShell || state.formulaMathfield) return state.formulaMathfield;
+  try {
+    const module = await import("/vendor/mathlive/mathlive.min.mjs");
+    if (!customElements.get("math-field") && module.MathfieldElement) customElements.define("math-field", module.MathfieldElement);
+    const field = document.createElement("math-field");
+    field.setAttribute("virtual-keyboard-mode", "manual");
+    field.setAttribute("aria-label", "可视化公式编辑器");
+    field.value = elements.insertFormulaLatex?.value || "x^2";
+    field.addEventListener("input", () => {
+      if (elements.insertFormulaLatex) elements.insertFormulaLatex.value = field.getValue?.() || field.value || "";
+    });
+    elements.formulaMathfieldShell.replaceChildren(field);
+    state.formulaMathfield = field;
+    const buttons = [
+      ["分式", "\\frac{#@}{#?}"], ["根号", "\\sqrt{#0}"], ["上标", "#@^{#?}"], ["下标", "#@_{#?}"],
+      ["积分", "\\int_{#?}^{#?} #0"], ["求和", "\\sum_{#?}^{#?} #0"], ["矩阵", "\\begin{bmatrix}#0 & #0\\\\#0 & #0\\end{bmatrix}"],
+      ["×", "\\times"], ["≤", "\\le"], ["≥", "\\ge"]
+    ];
+    elements.formulaPalette?.replaceChildren(...buttons.map(([label, latex]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.title = latex;
+      button.addEventListener("click", () => field.executeCommand?.(["insert", latex]));
+      return button;
+    }));
+    field.addEventListener("focusin", () => {
+      if (module.mathVirtualKeyboard) {
+        module.mathVirtualKeyboard.layouts = ["numeric", "symbols", "greek"];
+        module.mathVirtualKeyboard.visible = true;
+      }
+    });
+    return field;
+  } catch {
+    const fallback = document.createElement("textarea");
+    fallback.className = "formula-fallback-editor";
+    fallback.placeholder = "例如：\\frac{a}{b} + \\sqrt{x}";
+    fallback.value = elements.insertFormulaLatex?.value || "";
+    fallback.addEventListener("input", () => { if (elements.insertFormulaLatex) elements.insertFormulaLatex.value = fallback.value; });
+    elements.formulaMathfieldShell.replaceChildren(fallback);
+    state.formulaMathfield = fallback;
+    return fallback;
+  }
+}
+
+function syncStructureDialogType(type = elements.structureTypeInput?.value || "figure") {
+  state.structureType = type;
+  const isFigure = type === "figure";
+  const isTable = type === "table";
+  elements.figureOptions?.classList.toggle("hidden", !isFigure);
+  elements.tableOptions?.classList.toggle("hidden", !isTable);
+  elements.formulaOptions?.classList.toggle("hidden", type !== "formula");
+  if (elements.structureDialogTitle) elements.structureDialogTitle.textContent = isFigure ? "插入图片" : isTable ? "插入表格" : "插入公式";
+  if (elements.insertFigureSubmitButton) {
+    elements.insertFigureSubmitButton.querySelector("span").textContent = `生成并插入${isFigure ? "" : isTable ? "表格" : "公式"}`;
+  }
+  if (type === "table") renderInsertTableGrid();
+  if (type === "formula") void ensureFormulaEditor();
+}
+
+function renderFigureGrid() {
+  if (!elements.figureGrid) return;
+  const rawCount = String(elements.figureImageCountInput.value || "").trim();
+  const count = Math.min(MAX_FIGURE_IMAGE_COUNT, Math.max(1, Number(rawCount) || 1));
+  const arrangement = elements.figureArrangementInput.value;
+  const columns = arrangement === "stack"
+    ? 1
+    : Math.min(4, Math.max(1, Number(elements.figureColumnsInput.value) || 1));
+  const slotCount = Math.min(MAX_FIGURE_IMAGE_COUNT, Math.max(count, Math.ceil(count / columns) * columns));
+  const rows = Math.ceil(slotCount / columns);
+  elements.figureImageCountInput.value = String(count);
+  elements.figureColumnsInput.value = String(columns);
+  elements.figureGrid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+  state.figureSlots = Array.from({ length: slotCount }, (_value, index) => state.figureSlots[index] || "");
+  const available = figureProjectImages();
+  elements.figureGrid.replaceChildren();
+  for (let index = 0; index < slotCount; index += 1) {
+    const select = document.createElement("select");
+    select.className = `figure-slot ${state.figureSlots[index] ? "selected" : ""}`;
+    select.dataset.slot = String(index);
+    select.setAttribute("aria-label", `第 ${index + 1} 个图片位置`);
+    select.append(new Option("点击选择图片", ""));
+    for (const file of available) select.append(new Option(file, file));
+    select.value = state.figureSlots[index] || "";
+    select.addEventListener("focus", () => {
+      state.figureSelectedSlot = index;
+    });
+    select.addEventListener("change", () => {
+      state.figureSelectedSlot = index;
+      const wasSelected = Boolean(state.figureSlots[index]);
+      if (select.value && !wasSelected && state.figureSlots.filter(Boolean).length >= count) {
+        select.value = "";
+        toast(`当前设置只需要 ${count} 张图片。`, "warning", 2800);
+        return;
+      }
+      state.figureSlots[index] = select.value;
+      select.classList.toggle("selected", Boolean(select.value));
+      syncFigureImageInput();
+    });
+    elements.figureGrid.append(select);
+  }
+  syncFigureImageInput();
+  const mode = state.project?.layoutMode === "double" ? "双栏模板" : "单栏模板";
+  elements.figureLayoutSummary.textContent = `${mode} · ${count} 张图片 · ${rows} 行 × ${columns} 列，共 ${slotCount} 个位置 · 规则生成 LaTeX，不调用 AI。`;
+}
+
+function focusFigureCountInput(event) {
+  // Selecting the default value prevents typing "2" from becoming "12" and
+  // then being clamped to the maximum number of layout slots.
+  const input = event.currentTarget;
+  state.figureNumberInputChanged = false;
+  input.select();
+  window.requestAnimationFrame(() => {
+    if (document.activeElement === input && !state.figureNumberInputChanged) input.select();
+  });
+}
+
+function figureNumberInput(eventOrInput) {
+  return eventOrInput?.currentTarget || eventOrInput || elements.figureImageCountInput;
+}
+
+function handleFigureNumberInput(event) {
+  const input = figureNumberInput(event);
+  state.figureNumberInputChanged = true;
+  if (!String(input?.value || "").trim()) return;
+  renderFigureGrid();
+}
+
+function commitFigureNumberInput(eventOrInput) {
+  const input = figureNumberInput(eventOrInput);
+  if (!input) return;
+  if (!String(input.value || "").trim()) {
+    input.value = "1";
+  }
+  renderFigureGrid();
+}
+
+async function uploadFigureFile(file, { overwrite = false, conflictMode = "" } = {}) {
+  const params = new URLSearchParams({ name: file.name });
+  if (overwrite) params.set("overwrite", "1");
+  if (conflictMode) params.set("conflictMode", conflictMode);
+  const response = await fetch(`/api/figure/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || `图片上传失败：${response.status}`);
+    error.payload = payload;
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
 function openFigureDialog(anchor) {
   state.figureAnchor = anchor;
+  if (elements.structureTypeInput) elements.structureTypeInput.value = "figure";
+  state.figureSlots = [];
+  state.figureSelectedSlot = 0;
   elements.figureImagesInput.value = "";
-  elements.figurePlacementInput.value = anchor?.type === "source"
-    ? "插入当前位置附近，放在栏顶部"
-    : "插入本段之后，放在栏顶部";
+  elements.figurePlacementInput.value = anchor?.type === "source" ? "插入当前位置附近" : "插入本段之后";
+  elements.figureSpanInput.value = "column";
+  elements.figureAlignmentInput.value = "center";
+  elements.figureArrangementInput.value = "side-by-side";
+  elements.figureImageCountInput.value = "1";
+  elements.figureColumnsInput.value = "1";
+  elements.figurePositionInput.value = "top";
   elements.figureCaptionInput.value = "";
   elements.figureLabelInput.value = "";
   elements.figureAnchorMeta.textContent = figureAnchorText(anchor);
+  if (elements.insertTableCaption) elements.insertTableCaption.value = "";
+  if (elements.insertTableLabel) elements.insertTableLabel.value = "";
+  if (elements.insertFormulaLabel) elements.insertFormulaLabel.value = "";
+  if (elements.insertFormulaLatex) elements.insertFormulaLatex.value = "";
+  state.formulaMathfield = null;
+  elements.formulaMathfieldShell?.replaceChildren();
+  renderFigureGrid();
+  syncStructureDialogType("figure");
   if (!elements.figureDialog.open) elements.figureDialog.showModal();
-  window.requestAnimationFrame(() => elements.figureImagesInput.focus());
+  window.requestAnimationFrame(() => elements.figureGrid?.querySelector("select")?.focus());
 }
 
 function closeFigureDialog() {
@@ -5298,6 +6004,7 @@ function applyFigureInsertionResult(result) {
     updateSourceLineNumbers();
     setSourceDirty(false);
     refreshSourceSearch();
+    renderSectionList();
   }
   if (result.document && result.document.file === state.currentFile) {
     state.currentDocument = result.document;
@@ -5312,6 +6019,7 @@ function applyFigureInsertionResult(result) {
 
 async function submitFigureInsertion(event) {
   event.preventDefault();
+  commitFigureNumberInput(elements.figureImageCountInput);
   const anchor = state.figureAnchor;
   if (!anchor) return;
   if (state.sourceDirty && state.sourceFile === anchor.file) {
@@ -5319,10 +6027,47 @@ async function submitFigureInsertion(event) {
     if (!saved) return;
     if (anchor.type === "source") anchor.sourceHash = state.sourceHash;
   }
+  if (state.structureType === "table" || state.structureType === "formula") {
+    setBusy(elements.insertFigureSubmitButton, true);
+    try {
+      const latex = state.structureType === "table"
+        ? createTableLatex({
+            rows: readInsertTableRows(),
+            caption: elements.insertTableCaption?.value || "",
+            label: elements.insertTableLabel?.value || "",
+            span: elements.insertTableSpan?.value === "span",
+            grid: elements.insertTableBorder?.value === "grid"
+          })
+        : createFormulaLatex({
+            latex: elements.insertFormulaLatex?.value || state.formulaMathfield?.getValue?.() || state.formulaMathfield?.value || "",
+            numbered: elements.insertFormulaNumbered?.value !== "none",
+            label: elements.insertFormulaLabel?.value || ""
+          });
+      const result = await api("/api/structure/insert", {
+        method: "POST",
+        body: JSON.stringify({
+          file: anchor.file,
+          anchor,
+          kind: state.structureType,
+          latex,
+          deferCompile: state.project?.config?.autoCompile !== true
+        })
+      });
+      closeFigureDialog();
+      applyFigureInsertionResult(result);
+      toast(`已插入${state.structureType === "table" ? "表格" : "公式"}。`, "success", 4200);
+    } catch (error) {
+      toast(error.message, "error", 6200);
+    } finally {
+      setBusy(elements.insertFigureSubmitButton, false);
+    }
+    return;
+  }
+  syncFigureImageInput();
   const images = elements.figureImagesInput.value.trim();
   if (!images) {
-    toast("请先输入至少一张图片链接或路径。", "error");
-    elements.figureImagesInput.focus();
+    toast("请先在图片方框中选择至少一张图片。", "error");
+    elements.figureGrid?.querySelector("select")?.focus();
     return;
   }
   setBusy(elements.insertFigureSubmitButton, true);
@@ -5336,6 +6081,7 @@ async function submitFigureInsertion(event) {
         description: elements.figurePlacementInput.value.trim(),
         caption: elements.figureCaptionInput.value.trim(),
         label: elements.figureLabelInput.value.trim(),
+        layout: figureLayoutOptions(),
         deferCompile: state.project?.config?.autoCompile !== true
       })
     });
@@ -5347,6 +6093,72 @@ async function submitFigureInsertion(event) {
     toast(error.message, "error", 6800);
   } finally {
     setBusy(elements.insertFigureSubmitButton, false);
+  }
+}
+
+function openStructureDialog(type, anchor) {
+  if (type === "figure") {
+    openFigureDialog(anchor);
+    return;
+  }
+  state.figureAnchor = anchor;
+  if (elements.structureTypeInput) elements.structureTypeInput.value = type;
+  elements.figureAnchorMeta.textContent = figureAnchorText(anchor);
+  if (type === "table") {
+    if (elements.insertTableRows) elements.insertTableRows.value = "3";
+    if (elements.insertTableColumns) elements.insertTableColumns.value = "3";
+    if (elements.insertTableCaption) elements.insertTableCaption.value = "";
+    if (elements.insertTableLabel) elements.insertTableLabel.value = "";
+    renderInsertTableGrid();
+  } else {
+    if (elements.insertFormulaLabel) elements.insertFormulaLabel.value = "";
+    if (elements.insertFormulaLatex) elements.insertFormulaLatex.value = "";
+    state.formulaMathfield = null;
+    elements.formulaMathfieldShell?.replaceChildren();
+  }
+  syncStructureDialogType(type);
+  if (!elements.figureDialog.open) elements.figureDialog.showModal();
+}
+
+async function handleExternalFigureFiles() {
+  const files = [...(elements.figureExternalInput?.files || [])];
+  if (!files.length) return;
+  const requestedCount = Math.min(MAX_FIGURE_IMAGE_COUNT, Math.max(1, Number(elements.figureImageCountInput.value) || 1));
+  setBusy(elements.chooseExternalFigureButton, true);
+  try {
+    for (const file of files) {
+      const nextSlot = Math.min(state.figureSelectedSlot, Math.max(0, state.figureSlots.length - 1));
+      if (!state.figureSlots[nextSlot] && state.figureSlots.filter(Boolean).length >= requestedCount) {
+        toast(`当前设置只需要 ${requestedCount} 张图片，未继续添加更多文件。`, "warning", 3600);
+        break;
+      }
+      let result;
+      try {
+        result = await uploadFigureFile(file);
+      } catch (error) {
+        if (error.status !== 409 || error.payload?.code !== "FIGURE_NAME_CONFLICT") throw error;
+        const overwrite = window.confirm("当前图片已存在，是否选择覆盖？\n选择“取消”将保留原图片，并把新文件另存为带 (2) 的名称。")
+          ? true
+          : false;
+        result = await uploadFigureFile(file, overwrite ? { overwrite: true } : { conflictMode: "suffix" });
+      }
+      const slot = nextSlot;
+      state.figureSlots[slot] = result.relativePath;
+      state.figureSelectedSlot = Math.min(slot + 1, Math.max(0, state.figureSlots.length - 1));
+      const extension = result.relativePath.slice(result.relativePath.lastIndexOf(".")).toLowerCase();
+      state.project.projectFiles = [
+        ...(state.project.projectFiles || []).filter((entry) => entry.path !== result.relativePath),
+        { path: result.relativePath, type: "file", extension, previewable: PROJECT_PREVIEW_EXTENSIONS.has(extension), size: file.size }
+      ].sort((left, right) => left.path.localeCompare(right.path));
+      renderDocumentList();
+      renderFigureGrid();
+    }
+    toast(`已添加 ${files.length} 个项目外图片。`, "success");
+  } catch (error) {
+    toast(error.message, "error", 6200);
+  } finally {
+    elements.figureExternalInput.value = "";
+    setBusy(elements.chooseExternalFigureButton, false);
   }
 }
 
@@ -5480,6 +6292,7 @@ function renderSegments() {
   }
   fitAllSegmentRows();
   renderDocumentList();
+  renderSectionList();
   updateTranslateFileButton();
   updateTranslateSectionButton();
   refreshIcons();
@@ -5516,7 +6329,7 @@ function ensureSourceSearchControls() {
   search.setAttribute("role", "search");
   search.innerHTML = `
     <i data-lucide="search"></i>
-    <input id="sourceSearchInput" type="search" autocomplete="off" aria-label="搜索当前 TeX 源码" placeholder="搜索当前文件" disabled>
+    <input id="sourceSearchInput" type="search" autocomplete="off" aria-label="搜索当前源文件" placeholder="搜索当前文件" disabled>
     <span id="sourceSearchCount" aria-live="polite">0 / 0</span>
     <button class="icon-button small" id="sourceSearchPreviousButton" type="button" title="上一个匹配" disabled>
       <i data-lucide="chevron-up"></i>
@@ -5541,6 +6354,10 @@ function sourceSyntaxEscape(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function isMarkdownFile(file = state.sourceFile) {
+  return /\.(?:md|markdown)$/i.test(String(file || ""));
 }
 
 function latexSourceHighlightHtml(value) {
@@ -5609,10 +6426,31 @@ function latexSourceHighlightHtml(value) {
   return `${html}\u200b`;
 }
 
+function markdownSourceHighlightHtml(value) {
+  let fenced = false;
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const html = lines.map((line) => {
+    const escaped = sourceSyntaxEscape(line);
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      return `<span class="syntax-markdown-code">${escaped}</span>`;
+    }
+    if (fenced) return `<span class="syntax-markdown-code">${escaped}</span>`;
+    if (/^\s{0,3}#{1,6}\s+/.test(line)) return `<span class="syntax-markdown-heading">${escaped}</span>`;
+    if (/^\s*>/.test(line)) return `<span class="syntax-markdown-quote">${escaped}</span>`;
+    if (/^\s*(?:[-+*]|\d+\.)\s+/.test(line)) return `<span class="syntax-markdown-list">${escaped}</span>`;
+    if (/^\s*\|.*\|\s*$/.test(line)) return `<span class="syntax-markdown-table">${escaped}</span>`;
+    return escaped;
+  }).join("\n");
+  return `${html}\u200b`;
+}
+
 function updateSourceSyntaxHighlight() {
   const code = elements.sourceHighlightLayer?.querySelector("code");
   if (!code) return;
-  code.innerHTML = latexSourceHighlightHtml(elements.sourceEditor.value);
+  code.innerHTML = isMarkdownFile()
+    ? markdownSourceHighlightHtml(elements.sourceEditor.value)
+    : latexSourceHighlightHtml(elements.sourceEditor.value);
 }
 
 function syncSourceEditorLayers() {
@@ -5650,15 +6488,38 @@ function toggleSourceLineComments() {
   const rangeEnd = nextBreak === -1 ? value.length : nextBreak;
   const lines = value.slice(rangeStart, rangeEnd).split("\n");
   const contentLines = lines.filter((line) => line.trim());
-  const uncomment = contentLines.length > 0 && contentLines.every((line) => /^\s*%/.test(line));
+  const markdown = isMarkdownFile();
+  const uncomment = contentLines.length > 0 && contentLines.every((line) => (
+    markdown ? /^\s*<!--(?:\s|$).*?-->\s*$/.test(line) : /^\s*%/.test(line)
+  ));
   const replacement = lines.map((line) => {
     if (!line.trim()) return line;
+    if (markdown) {
+      return uncomment
+        ? line.replace(/^(\s*)<!--\s?(.*?)\s?-->\s*$/, "$1$2")
+        : line.replace(/^(\s*)(.*)$/, "$1<!-- $2 -->");
+    }
     return uncomment
       ? line.replace(/^(\s*)%\s?/, "$1")
       : line.replace(/^(\s*)/, "$1% ");
   }).join("\n");
   editor.setRangeText(replacement, rangeStart, rangeEnd, "select");
   editor.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function shouldProtectSourceBoundaryBackspace(editor) {
+  if (!editor || editor.selectionStart !== editor.selectionEnd) return false;
+  const cursor = editor.selectionStart;
+  const lineStart = editor.value.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
+  const line = editor.value.slice(lineStart, editor.value.indexOf("\n", cursor) < 0 ? editor.value.length : editor.value.indexOf("\n", cursor));
+  const column = cursor - lineStart;
+  if (column !== line.search(/\S|$/)) return false;
+  const previousLineEnd = lineStart - 1;
+  if (previousLineEnd < 0) return false;
+  const previousLineStart = editor.value.lastIndexOf("\n", previousLineEnd - 1) + 1;
+  const previousLine = editor.value.slice(previousLineStart, previousLineEnd);
+  if (!previousLine.trim()) return false;
+  return /^\s*\\end\s*\{(?:table\*?|tabular\*?|tabularx|longtable|equation\*?|align\*?|gather\*?|multline\*?)\}/.test(line);
 }
 
 function updateSourceStatus() {
@@ -5757,6 +6618,21 @@ function confirmDiscardSourceChanges() {
   return !state.sourceDirty || window.confirm("当前源码有未保存修改。放弃这些修改吗？");
 }
 
+function applySourceFileKind(file = state.sourceFile) {
+  const markdown = isMarkdownFile(file);
+  const bibliography = /\.bib$/i.test(String(file || ""));
+  elements.sourceView.classList.toggle("markdown-source", markdown);
+  elements.sourceViewTitle.textContent = markdown ? "Markdown 原文" : "TeX / Bib 源码";
+  elements.sourceFileControl.title = markdown
+    ? "选择要编辑的 Markdown 文件"
+    : "选择要编辑的 TeX、Bib 或 Markdown 文件";
+  elements.sourceEditor.setAttribute("aria-label", markdown ? "Markdown 原文编辑器" : "TeX 或 Bib 源码编辑器");
+  elements.sourceFocusButton.title = markdown ? "专注编辑 Markdown" : "专注编辑源码";
+  elements.sourceFocusButton.setAttribute("aria-label", elements.sourceFocusButton.title);
+  const saveLabel = elements.saveSourceButton.querySelector("span");
+  if (saveLabel) saveLabel.textContent = markdown ? "保存 Markdown" : bibliography ? "保存 Bib" : "保存 TeX";
+}
+
 function renderSourceFileOptions(preferredFile = "") {
   const files = state.project?.sourceFiles || state.project?.texFiles || [];
   const requested = String(preferredFile || "").replaceAll("\\", "/");
@@ -5772,7 +6648,9 @@ function renderSourceFileOptions(preferredFile = "") {
     option.value = file;
     option.textContent = file === state.project.config.mainTex
       ? `${file}（主文件）`
-      : file.toLowerCase().endsWith(".bib") ? `${file}（参考文献）` : file;
+      : file.toLowerCase().endsWith(".bib")
+        ? `${file}（参考文献）`
+        : isMarkdownFile(file) ? `${file}（Markdown）` : file;
     elements.sourceFileSelect.append(option);
   }
   elements.sourceFileSelect.disabled = files.length === 0;
@@ -5780,6 +6658,7 @@ function renderSourceFileOptions(preferredFile = "") {
   elements.sourceFileSelect.value = preferred || "";
   setSourceSearchEnabled(files.length > 0);
   if (!files.length) {
+    applySourceFileKind("");
     elements.sourceEditor.value = "";
     elements.sourceLineNumbers.textContent = "1";
     state.sourceSearchMatches = [];
@@ -5801,6 +6680,7 @@ async function loadSourceFile(file, { force = false } = {}) {
   if (!force && file !== state.sourceFile && !confirmDiscardSourceChanges()) return false;
   elements.sourceStatus.classList.remove("clean", "dirty", "error");
   elements.sourceStatus.textContent = "正在读取源码...";
+  showSourceEditor();
   updateTopbarCurrentFile(file);
   elements.sourceEditor.disabled = true;
   try {
@@ -5813,11 +6693,14 @@ async function loadSourceFile(file, { force = false } = {}) {
     elements.sourceEditor.value = source.content;
     state.sourceSavedContent = elements.sourceEditor.value;
     elements.sourceEditor.disabled = false;
+    applySourceFileKind(source.file);
     updateTopbarCurrentFile(source.file);
     updateSourceLineNumbers();
     setSourceDirty(false);
     refreshSourceSearch();
-    if (state.previewMode === "fast" && source.file.toLowerCase().endsWith(".tex")) scheduleFastPreview(source.file, 0);
+    if (isMarkdownFile(source.file)) scheduleMarkdownPreview(source.file, 0);
+    else if (source.file.toLowerCase().endsWith(".tex")) scheduleFastPreview(source.file, 0);
+    else if (state.previewMode === "markdown") scheduleFastPreview(state.currentDocument?.file || state.currentFile || "", 0);
     return true;
   } catch (error) {
     elements.sourceStatus.classList.remove("clean", "dirty");
@@ -5841,9 +6724,10 @@ async function refreshLoadedSourceFromDisk(file) {
     updateSourceLineNumbers();
     setSourceDirty(false);
     refreshSourceSearch({ keepIndex: true });
+    renderSectionList();
     return true;
   } catch (error) {
-    console.warn("Unable to refresh the loaded TeX source:", error);
+    console.warn("Unable to refresh the loaded source file:", error);
     return false;
   }
 }
@@ -5896,7 +6780,10 @@ async function saveSourceFile(options = {}) {
       state.sourceSavedContent = requestedContent;
       state.sourceDirty = elements.sourceEditor.value !== requestedContent;
     }
-    if (options.refreshPreview !== false) scheduleFastPreview(previewFileAfterSourceChange(requestedFile), 0);
+    if (options.refreshPreview !== false) {
+      if (isMarkdownFile(requestedFile)) scheduleMarkdownPreview(requestedFile, 0);
+      else scheduleFastPreview(previewFileAfterSourceChange(requestedFile), 0);
+    }
     updateBuild(result.build);
     const savedFile = result.source.file;
     if (result.project) state.project = result.project;
@@ -5906,7 +6793,7 @@ async function saveSourceFile(options = {}) {
       renderSegments();
     }
     if (!quiet) {
-      const kind = state.sourceFile.toLowerCase().endsWith(".bib") ? "Bib" : "TeX";
+      const kind = isMarkdownFile(requestedFile) ? "Markdown" : requestedFile.toLowerCase().endsWith(".bib") ? "Bib" : "TeX";
       toast(
         result.build
           ? result.build.skipped
@@ -5959,12 +6846,35 @@ function texHeadingOptions(source) {
   });
 }
 
+function createFileExtension(value = elements.newTexFileName?.value) {
+  const normalized = String(value || "").trim().replaceAll("\\", "/");
+  const base = normalized.split("/").at(-1) || "";
+  const match = base.match(/\.([A-Za-z0-9_-]+)$/);
+  return match ? `.${match[1].toLowerCase()}` : ".tex";
+}
+
+function updateCreateFileDialogKind() {
+  const extension = createFileExtension();
+  const isTex = extension === ".tex";
+  const insertionField = elements.newTexInsertion?.closest(".field");
+  insertionField?.classList.toggle("hidden", !isTex);
+  if (!isTex) {
+    elements.newTexInsertion.value = "none";
+    elements.newTexInsertionNote.textContent = `${extension === ".md" || extension === ".markdown" ? "Markdown" : extension.slice(1).toUpperCase()} 文件不会自动写入主 TeX。`;
+  } else {
+    elements.newTexInsertionNote.textContent = "选择章节时，会在该章节内容末尾写入 \\input{文件名}。";
+  }
+  const heading = elements.createTexDialog.querySelector("h2");
+  if (heading) heading.textContent = isTex ? "新建 TeX 文件" : "新建 Markdown 文件";
+}
+
 async function openCreateTexDialog() {
   if (state.sourceDirty) {
     const saved = await saveSourceFile({ deferCompile: true, quiet: true, refreshPreview: false });
     if (!saved) return;
   }
   elements.newTexFileName.value = "sections/new-section.tex";
+  updateCreateFileDialogKind();
   elements.newTexInsertion.replaceChildren();
   const options = [
     { value: "none", label: "只创建文件，不插入主 TeX" },
@@ -6023,7 +6933,9 @@ async function createTexFile(event) {
     renderDocumentList();
     renderSourceFileOptions(result.source.file);
     await loadSourceFile(result.source.file, { force: true });
-    toast(result.insertion ? `TeX 文件已创建，并已写入 ${result.insertion.mainTex}。` : "TeX 文件已创建。", "success");
+    const extension = createFileExtension(prepared);
+    const kind = extension === ".tex" ? "TeX" : "Markdown";
+    toast(result.insertion ? `${kind} 文件已创建，并已写入 ${result.insertion.mainTex}。` : `${kind} 文件已创建。`, "success");
   } catch (error) {
     toast(error.message, "error", 5200);
   } finally {
@@ -6558,332 +7470,6 @@ async function translateCurrentFile() {
   }
 }
 
-function formatFileName(filePath) {
-  return String(filePath || "").split(/[\\/]/).pop() || "format-file";
-}
-
-function renderFormatFiles(files = state.formatFiles.map((file) => ({ name: formatFileName(file), path: file }))) {
-  elements.formatFileList.replaceChildren();
-  if (!files.length) {
-    const empty = document.createElement("div");
-    empty.className = "format-empty";
-    empty.textContent = "未添加格式文件";
-    elements.formatFileList.append(empty);
-    return;
-  }
-  for (const file of files) {
-    const row = document.createElement("div");
-    row.className = "format-file-row";
-    row.innerHTML = `
-      <i data-lucide="file-text"></i>
-      <span class="format-file-name"></span>
-      <span class="format-file-type"></span>
-      <button class="mini-button format-remove-button" type="button" title="移除"><i data-lucide="x"></i></button>
-    `;
-    row.querySelector(".format-file-name").textContent = file.name;
-    row.querySelector(".format-file-type").textContent = file.type || file.name.split(".").pop()?.toUpperCase() || "FILE";
-    const removeButton = row.querySelector(".format-remove-button");
-    if (!file.path) removeButton.classList.add("hidden");
-    else removeButton.addEventListener("click", () => {
-      state.formatFiles = state.formatFiles.filter((item) => item !== file.path);
-      renderFormatFiles();
-    });
-    elements.formatFileList.append(row);
-  }
-  refreshIcons();
-}
-
-function renderFormatWorkflow(workflow, execution = null) {
-  elements.formatWorkflow.replaceChildren();
-  if (!workflow) return;
-  if (workflow.mode === "monolithic") {
-    const warning = document.createElement("div");
-    warning.className = "format-workflow-warning";
-    warning.textContent = "当前正文仍集中在主文件中。建议先进入 TeX 页面按章节拆分，以降低格式迁移所需上下文。";
-    elements.formatWorkflow.append(warning);
-  }
-  const stages = document.createElement("div");
-  stages.className = "format-workflow-stages";
-  for (const stage of workflow.stages || []) {
-    const row = document.createElement("div");
-    row.className = `format-workflow-stage ${stage.scope}`;
-    const label = document.createElement("strong");
-    label.textContent = stage.label;
-    const files = document.createElement("span");
-    files.textContent = stage.files.length ? stage.files.join("、") : "未引用文件";
-    const completed = execution?.stages?.find((item) => item.id === stage.id);
-    const meta = document.createElement("small");
-    meta.textContent = stage.readOnly
-      ? "独立保留，不重写 Bib 条目"
-      : completed ? `${completed.operations} 个精确操作` : stage.responsibilities.join("、");
-    row.append(label, files, meta);
-    stages.append(row);
-  }
-  elements.formatWorkflow.append(stages);
-}
-
-function renderFormatJob(job) {
-  state.formatJob = job;
-  if (!job) {
-    elements.formatAnalysisSection.classList.add("hidden");
-    elements.formatMeta.textContent = "尚未分析目标格式";
-    elements.formatWorkflow.replaceChildren();
-    return;
-  }
-  if (!state.formatFiles.length && job.sourceFiles?.length) renderFormatFiles(job.sourceFiles);
-  if (job.requirements && !elements.formatRequirements.value) elements.formatRequirements.value = job.requirements;
-  if (!job.analysis) {
-    elements.formatAnalysisSection.classList.add("hidden");
-    elements.formatMeta.textContent = "格式分析未完成";
-    elements.formatWorkflow.replaceChildren();
-    return;
-  }
-
-  const statusLabels = {
-    analyzed: "已分析",
-    applying: "正在应用",
-    applied: "已应用",
-    "awaiting-command-approval": "等待命令确认",
-    "apply-failed": "应用失败",
-    "analysis-failed": "分析失败"
-  };
-  elements.formatAnalysisSection.classList.remove("hidden");
-  elements.formatTargetName.textContent = job.analysis.targetName;
-  elements.formatAnalysisSummary.textContent = job.analysis.summary;
-  const executionParts = [];
-  if (job.execution?.operations) executionParts.push(`${job.execution.operations} 个精确操作`);
-  if (job.execution?.modelAttempts > 1) executionParts.push(`${job.execution.modelAttempts} 次模型响应`);
-  if (job.execution?.compileRepairAttempts) executionParts.push(`${job.execution.compileRepairAttempts} 次编译修复`);
-  if (!job.execution && job.analysis.modelAttempts > 1) executionParts.push(`${job.analysis.modelAttempts} 次模型响应`);
-  elements.formatMeta.textContent = [
-    `${job.analysis.differences.length} 项格式差异`,
-    ...executionParts
-  ].join(" · ");
-  renderFormatWorkflow(job.workflow, job.execution);
-  elements.formatStatus.textContent = statusLabels[job.status] || job.status;
-  elements.formatStatus.classList.toggle("failed", job.status.includes("failed"));
-  elements.formatDifferenceList.replaceChildren();
-
-  const header = document.createElement("div");
-  header.className = "format-difference-row header";
-  for (const label of ["项目", "当前格式", "目标格式", "修改动作", "风险"]) {
-    const cell = document.createElement("span");
-    cell.textContent = label;
-    header.append(cell);
-  }
-  elements.formatDifferenceList.append(header);
-  for (const difference of job.analysis.differences) {
-    const row = document.createElement("div");
-    row.className = "format-difference-row";
-    const category = document.createElement("span");
-    category.className = "format-category";
-    const categoryText = document.createElement("span");
-    categoryText.textContent = difference.category;
-    const scope = document.createElement("small");
-    scope.className = `format-scope ${difference.scope || "global"}`;
-    scope.textContent = difference.scope === "local"
-      ? "局部"
-      : difference.scope === "references" ? "Bib" : difference.scope === "both" ? "整体+局部" : "整体";
-    category.append(categoryText, scope);
-    const current = document.createElement("span");
-    current.textContent = difference.current;
-    const target = document.createElement("span");
-    target.textContent = difference.target;
-    const action = document.createElement("span");
-    action.textContent = difference.action;
-    const risk = document.createElement("span");
-    risk.className = `format-risk ${difference.risk}`;
-    risk.textContent = difference.risk === "high" ? "高" : difference.risk === "medium" ? "中" : "低";
-    row.append(category, current, target, action, risk);
-    elements.formatDifferenceList.append(row);
-  }
-
-  elements.formatWarningList.replaceChildren();
-  for (const warning of job.analysis.warnings || []) {
-    const item = document.createElement("div");
-    item.textContent = `• ${warning}`;
-    elements.formatWarningList.append(item);
-  }
-  document.querySelector("#applyFormatButton").disabled = job.status === "applying";
-}
-
-async function loadLatestFormatJob() {
-  try {
-    renderFormatJob(await api("/api/format/latest"));
-  } catch (error) {
-    toast(error.message, "error");
-  }
-}
-
-async function chooseFormatFiles() {
-  if (!window.paperBridgeDesktop) {
-    toast("格式文件选择需要桌面版 PaperBridge。", "error");
-    return;
-  }
-  const selected = await window.paperBridgeDesktop.chooseFormatFiles();
-  state.formatFiles = [...new Set([...state.formatFiles, ...(selected || [])])];
-  renderFormatFiles();
-}
-
-function resolveFormatPreflight(proceed) {
-  const resolver = state.formatPreflightResolver;
-  state.formatPreflightResolver = null;
-  if (elements.formatPreflightDialog.open) elements.formatPreflightDialog.close();
-  resolver?.(proceed);
-}
-
-function renderFormatPreflight(preview) {
-  const alreadySplit = preview.mode === "modular";
-  const migration = preview.bibliographyMigration;
-  const canMigrateBibliography = preview.mode === "bibliography-required" && migration?.eligible;
-  const bibliographyFiles = canMigrateBibliography
-    ? migration.files.map((file) => file.file)
-    : preview.workflow.references.files;
-  state.formatPreflightPreview = preview;
-  elements.formatPreflightSummary.textContent = alreadySplit
-    ? "当前论文已经按章节组织，可以直接进入格式分析与迁移。"
-    : canMigrateBibliography
-      ? `检测到 ${migration.entries.length} 条内嵌参考文献。PaperBridge 可以先迁移到独立 Bib，再拆分章节并继续格式迁移。`
-    : preview.eligible
-      ? `检测到 ${preview.sections.length} 个章节。推荐先拆分，main.tex 仅保留整体格式，各章节文件分别迁移。`
-      : `当前项目暂时不能安全自动拆分：${preview.reason}`;
-  elements.formatPreflightFlow.replaceChildren(
-    structureStage("global", "检查项目结构", [preview.mainTex], "识别主文件、章节和参考文献"),
-    structureStage("local", "准备章节文件（推荐）", preview.workflow.local.files, "必要时先迁移 Bib，再按章节拆分"),
-    structureStage("references", "分析并迁移格式", bibliographyFiles, "先整体格式，再逐章处理；Bib 独立保留")
-  );
-  elements.formatPreflightWarning.textContent = alreadySplit
-    ? "章节结构已经准备好，格式迁移将按整体格式和局部章节分阶段执行。"
-    : canMigrateBibliography
-      ? "一键准备会保留引用键与原始文献文本，并在每一步编译验证。也可以不拆分继续，但论文较长时可能超过模型上下文限制，导致格式迁移失败。"
-    : "如果选择不拆分，AI 需要一次读取更长的上下文；论文较长时可能超过模型的上下文限制，导致分析不完整或格式迁移失败。";
-  elements.formatPreflightWarning.classList.toggle("ready", alreadySplit);
-  elements.splitForFormatButton.disabled = alreadySplit || (!preview.eligible && !canMigrateBibliography);
-  elements.splitForFormatButton.title = alreadySplit
-    ? "当前项目已经按章节组织"
-    : canMigrateBibliography
-      ? "迁移参考文献、拆分章节、重新编译，然后继续格式分析"
-      : preview.eligible ? "拆分、重新编译，然后继续格式分析" : preview.reason;
-  elements.splitForFormatButton.querySelector("span").textContent = alreadySplit
-    ? "已完成章节拆分"
-    : canMigrateBibliography ? "迁移 Bib、拆分并继续" : "一键拆分并继续";
-  elements.continueWithoutSplitButton.querySelector("span").textContent = alreadySplit ? "继续分析格式" : "不拆分，继续";
-  refreshIcons();
-}
-
-async function openFormatPreflight() {
-  const preview = await api("/api/project/modularize/preview", { method: "POST", body: "{}" });
-  renderFormatPreflight(preview);
-  return new Promise((resolve) => {
-    state.formatPreflightResolver = resolve;
-    elements.formatPreflightDialog.showModal();
-  });
-}
-
-async function splitForFormatMigration() {
-  let preview = state.formatPreflightPreview;
-  const canMigrateBibliography = preview?.mode === "bibliography-required" && preview.bibliographyMigration?.eligible;
-  if (!preview?.eligible && !canMigrateBibliography) return;
-  setBusy(elements.splitForFormatButton, true);
-  elements.continueWithoutSplitButton.disabled = true;
-  let bibliographyMigrated = false;
-  try {
-    if (canMigrateBibliography) {
-      const migration = await migrateInlineBibliography(preview);
-      bibliographyMigrated = true;
-      toast(`已迁移 ${migration.entries.length} 条参考文献，正在拆分章节。`, "success", 5200);
-      preview = await api("/api/project/modularize/preview", { method: "POST", body: "{}" });
-      if (!preview.eligible) throw new Error(preview.reason || "参考文献已迁移，但当前项目仍不能自动拆分。可选择不拆分继续格式迁移。");
-    }
-    const result = await api("/api/project/modularize/apply", {
-      method: "POST",
-      body: JSON.stringify({ confirmed: true, fingerprint: preview.fingerprint })
-    });
-    updateBuild(result.build);
-    await refreshProject({ preserveDocument: false });
-    toast(`${bibliographyMigrated ? "参考文献迁移和" : ""}章节拆分完成：${result.sections.length} 个章节文件。正在继续分析格式。`, "success", 6200);
-    resolveFormatPreflight(true);
-  } catch (error) {
-    if (error.payload?.details?.errors) updateBuild(error.payload.details);
-    if (bibliographyMigrated) {
-      const latest = await api("/api/project/modularize/preview", { method: "POST", body: "{}" }).catch(() => null);
-      if (latest) renderFormatPreflight(latest);
-      toast(`参考文献已经迁移，但章节拆分未完成：${error.message}。你仍可选择不拆分继续格式迁移。`, "error", 9000);
-    } else {
-      toast(error.message, "error", 7600);
-    }
-  } finally {
-    setBusy(elements.splitForFormatButton, false);
-    elements.continueWithoutSplitButton.disabled = false;
-  }
-}
-
-async function analyzeTargetFormat() {
-  const button = document.querySelector("#analyzeFormatButton");
-  const requirements = elements.formatRequirements.value.trim();
-  if (!requirements && !state.formatFiles.length) {
-    toast("请描述目标格式或添加格式文件。", "error");
-    elements.formatRequirements.focus();
-    return;
-  }
-  setBusy(button, true);
-  try {
-    const proceed = await openFormatPreflight();
-    if (!proceed) return;
-    elements.formatMeta.textContent = "正在解析并比较格式...";
-    const job = await api("/api/format/analyze", {
-      method: "POST",
-      body: JSON.stringify({ requirements, filePaths: state.formatFiles })
-    });
-    renderFormatJob(job);
-    toast("格式差异分析完成。", "success");
-  } catch (error) {
-    elements.formatMeta.textContent = "格式分析失败";
-    toast(error.message, "error", 6800);
-  } finally {
-    setBusy(button, false);
-  }
-}
-
-async function applyTargetFormat() {
-  if (!state.formatJob?.id) return;
-  const confirmed = window.confirm("将先修改 main.tex 的整体格式，再逐个处理章节文件；Bib 条目保持独立。编译失败时会自动恢复原文件。继续吗？");
-  if (!confirmed) return;
-  const button = document.querySelector("#applyFormatButton");
-  setBusy(button, true);
-  elements.formatStatus.textContent = "整体格式 → 局部章节";
-  try {
-    let approvalToken = "";
-    let result;
-    while (!result) {
-      try {
-        result = await api("/api/format/apply", {
-          method: "POST",
-          body: JSON.stringify({ jobId: state.formatJob.id, approvalToken })
-        });
-      } catch (error) {
-        if (confirmUnexpectedLatexCommands(error)) {
-          approvalToken = error.payload.details.approvalToken;
-          continue;
-        }
-        throw error;
-      }
-    }
-    renderFormatJob(result.job);
-    updateBuild(result.build);
-    await refreshProject({ preserveDocument: false });
-    toast(`格式迁移完成，PDF 共 ${result.build.pdf.pages} 页。`, "success", 5200);
-  } catch (error) {
-    elements.formatStatus.textContent = "应用失败";
-    elements.formatStatus.classList.add("failed");
-    if (error.payload?.details?.pdf || error.payload?.details?.warnings || error.payload?.details?.errors) updateBuild(error.payload.details);
-    toast(error.payload?.code === "DANGEROUS_LATEX_COMMANDS" ? dangerousLatexMessage(error) : error.message, "error", 7600);
-    await loadLatestFormatJob();
-  } finally {
-    setBusy(button, false);
-  }
-}
-
 async function exportPdf() {
   if (state.compileInFlight || state.buildPreviewAvailable === false) {
     elements.buildDrawer.classList.remove("hidden");
@@ -6968,7 +7554,6 @@ function setSourceFocus(focused) {
 
 function setMode(mode, { loadCurrent = true } = {}) {
   if (mode === "references") return setReferencesOpen(!state.referencesOpen);
-  if (mode === "format") return false;
   if (state.referencesOpen) setReferencesOpen(false);
   if (state.mode === "source" && mode !== "source" && state.sourceDirty) {
     if (!confirmDiscardSourceChanges()) return false;
@@ -6981,7 +7566,6 @@ function setMode(mode, { loadCurrent = true } = {}) {
   updateModeButtons();
   elements.editView.classList.toggle("hidden", mode !== "edit");
   elements.sourceView.classList.toggle("hidden", mode !== "source");
-  elements.formatView.classList.add("hidden");
   if (mode === "source") {
     renderSourceFileOptions(loadCurrent ? state.currentFile : state.sourceFile);
     if (loadCurrent) void loadSourceFile(elements.sourceFileSelect.value, { force: true });
@@ -7201,7 +7785,7 @@ async function saveSettings({ close = true } = {}) {
       gitUsername: document.querySelector("#gitUsernameInput").value.trim(),
       gitToken: document.querySelector("#gitTokenInput").value.trim(),
       translation: collectProvider("translation"),
-      format: collectProvider("format")
+      diagnosis: collectProvider("diagnosis")
     })
   });
   if (projectRoot !== previous.projectRoot || mainTex !== previous.mainTex) {
@@ -7277,8 +7861,6 @@ function bindEvents() {
   elements.saveTerminologyButton.addEventListener("click", saveTerminology);
   elements.regenerateTerminologyButton.addEventListener("click", regenerateTerminology);
   elements.applyTerminologyDefinitionsButton.addEventListener("click", applyTerminologyDefinitions);
-  elements.refreshReferencesButton.addEventListener("click", () => loadReferences({ force: true }));
-  elements.addReferenceButton.addEventListener("click", openReferenceAddDialog);
   elements.referenceLookupButton.addEventListener("click", lookupNewReference);
   elements.referenceAddForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -7302,14 +7884,12 @@ function bindEvents() {
     event.preventDefault();
     closeReferenceAddDialog();
   });
-  elements.referencesSearch.addEventListener("input", renderReferences);
-  elements.insertSelectedReferenceButton.addEventListener("click", () => {
-    const entry = selectedReference();
-    if (!entry) {
-      toast("请先选择一篇文献。", "error");
-      return;
-    }
-    insertCitationAtCurrentTarget(entry);
+  elements.referencesSearch.addEventListener("input", () => {
+    renderReferences();
+    window.clearTimeout(state.referenceSearchTimer);
+    state.referenceSearchTimer = window.setTimeout(() => {
+      maybeOpenReferenceAddDialogForSearch();
+    }, 450);
   });
   elements.closeReferencesButton.addEventListener("click", () => setReferencesOpen(false));
   elements.referenceInsertSearch.addEventListener("input", renderReferenceInsertList);
@@ -7376,9 +7956,6 @@ function bindEvents() {
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
   document.querySelector("#addProjectButton").addEventListener("click", () => openSetup(state.project, { switching: true }));
   document.querySelector("#closeSetupButton").addEventListener("click", () => elements.setupDialog.close());
-  document.querySelector("#addFormatFilesButton").addEventListener("click", chooseFormatFiles);
-  document.querySelector("#analyzeFormatButton").addEventListener("click", analyzeTargetFormat);
-  document.querySelector("#applyFormatButton").addEventListener("click", applyTargetFormat);
   document.querySelectorAll('input[name="setupSource"]').forEach((input) => input.addEventListener("change", updateSetupSource));
   document.querySelector("#setupConnectGit").addEventListener("change", updateOptionalGitFields);
   document.querySelector("#setupProviderType").addEventListener("change", updateSetupProviderDefaults);
@@ -7423,8 +8000,77 @@ function bindEvents() {
   elements.paragraphDialog.addEventListener("close", () => {
     state.paragraphAnchor = null;
   });
-  elements.insertFigureSourceButton.addEventListener("click", openSourceFigureDialog);
+  elements.insertFigureSourceButton.addEventListener("click", () => {
+    const menu = elements.sourceInsertMenu;
+    const open = menu?.classList.toggle("hidden") === false;
+    elements.insertFigureSourceButton.setAttribute("aria-expanded", String(open));
+  });
+  elements.sourceInsertMenu?.querySelectorAll("[data-insert-kind]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      elements.sourceInsertMenu.classList.add("hidden");
+      elements.insertFigureSourceButton.setAttribute("aria-expanded", "false");
+      if (button.dataset.insertKind === "figure") {
+        await openSourceFigureDialog();
+        return;
+      }
+      if (!state.sourceFile) {
+        toast("请先选择一个 TeX 文件。", "error");
+        return;
+      }
+      if (!state.sourceFile.toLowerCase().endsWith(".tex")) {
+        toast("表格和公式只能插入 TeX 文件。", "error");
+        return;
+      }
+      if (state.sourceDirty) {
+        const saved = await saveSourceFile({ deferCompile: true, quiet: true, refreshPreview: false });
+        if (!saved) return;
+      }
+      openStructureDialog(button.dataset.insertKind, {
+        type: "source",
+        file: state.sourceFile,
+        sourceHash: state.sourceHash,
+        cursorOffset: elements.sourceEditor.selectionStart || 0
+      });
+    });
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".source-insert-menu")) {
+      elements.sourceInsertMenu?.classList.add("hidden");
+      elements.insertFigureSourceButton?.setAttribute("aria-expanded", "false");
+    }
+  });
+  elements.structureTypeInput?.addEventListener("change", () => syncStructureDialogType());
+  [elements.insertTableRows, elements.insertTableColumns].filter(Boolean).forEach((input) => {
+    input.addEventListener("input", renderInsertTableGrid);
+    input.addEventListener("focus", () => input.select());
+  });
   elements.figureForm.addEventListener("submit", submitFigureInsertion);
+  [
+    elements.figureSpanInput,
+    elements.figureAlignmentInput,
+    elements.figureArrangementInput,
+    elements.figurePositionInput
+  ].filter(Boolean).forEach((input) => input.addEventListener("input", renderFigureGrid));
+  [
+    elements.figureSpanInput,
+    elements.figureAlignmentInput,
+    elements.figureArrangementInput,
+    elements.figurePositionInput
+  ].filter(Boolean).forEach((input) => input.addEventListener("change", renderFigureGrid));
+  [elements.figureImageCountInput, elements.figureColumnsInput]
+    .filter(Boolean)
+    .forEach((input) => input.addEventListener("input", handleFigureNumberInput));
+  [elements.figureImageCountInput, elements.figureColumnsInput]
+    .filter(Boolean)
+    .forEach((input) => input.addEventListener("change", commitFigureNumberInput));
+  [elements.figureImageCountInput, elements.figureColumnsInput]
+    .filter(Boolean)
+    .forEach((input) => input.addEventListener("blur", commitFigureNumberInput));
+  elements.chooseExternalFigureButton?.addEventListener("click", () => elements.figureExternalInput?.click());
+  elements.figureExternalInput?.addEventListener("change", () => void handleExternalFigureFiles());
+  [elements.figureImageCountInput, elements.figureColumnsInput]
+    .filter(Boolean)
+    .forEach((input) => input.addEventListener("focus", focusFigureCountInput));
   document.querySelector("#closeFigureButton").addEventListener("click", closeFigureDialog);
   document.querySelector("#cancelFigureButton").addEventListener("click", closeFigureDialog);
   elements.figureDialog.addEventListener("close", () => {
@@ -7472,7 +8118,8 @@ function bindEvents() {
     finishGitConflictSelection(null);
   });
   document.querySelector("#refreshPdfButton").addEventListener("click", () => {
-    if (state.previewMode === "fast") void renderFastPreview(state.fastPreviewFile || state.currentDocument?.file || "");
+    if (state.previewMode === "markdown") void renderMarkdownPreview(state.sourceFile);
+    else if (state.previewMode === "fast") void renderFastPreview(state.fastPreviewFile || state.currentDocument?.file || "");
     else updatePdf();
   });
   elements.exportPdfButton.addEventListener("click", exportPdf);
@@ -7491,14 +8138,28 @@ function bindEvents() {
     const loaded = await loadSourceFile(event.currentTarget.value);
     if (!loaded) event.currentTarget.value = previous || "";
   });
+  elements.closeProjectFilePreviewButton?.addEventListener("click", () => {
+    showSourceEditor();
+    if (state.sourceFile) updateTopbarCurrentFile(state.sourceFile);
+    renderSectionList();
+  });
   elements.sourceEditor.addEventListener("input", () => {
     updateSourceLineNumbers();
     setSourceDirty(elements.sourceEditor.value !== state.sourceSavedContent);
     refreshSourceSearch({ keepIndex: true });
-    if (state.sourceFile?.toLowerCase().endsWith(".tex")) {
+    renderSectionList();
+    if (isMarkdownFile()) {
+      scheduleMarkdownPreview(state.sourceFile, 80);
+      scheduleSourceAutosave();
+    } else if (state.sourceFile?.toLowerCase().endsWith(".tex")) {
       scheduleFastPreview(state.sourceFile, 160);
       scheduleSourceAutosave();
     }
+  });
+  elements.sourceEditor.addEventListener("beforeinput", (event) => {
+    if (event.inputType !== "deleteContentBackward" || !shouldProtectSourceBoundaryBackspace(elements.sourceEditor)) return;
+    event.preventDefault();
+    toast("已在环境结束行行首，未删除上一行。", "info", 2400);
   });
   elements.sourceEditor.addEventListener("scroll", () => {
     syncSourceEditorLayers();
@@ -7517,6 +8178,11 @@ function bindEvents() {
       event.preventDefault();
       elements.sourceEditor.setRangeText("  ", elements.sourceEditor.selectionStart, elements.sourceEditor.selectionEnd, "end");
       elements.sourceEditor.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    if (event.key === "Backspace" && shouldProtectSourceBoundaryBackspace(elements.sourceEditor)) {
+      event.preventDefault();
+      toast("已在环境结束行行首，未删除上一行。", "info", 2400);
       return;
     }
     if (event.key.toLowerCase() === "s" && (event.ctrlKey || event.metaKey)) {
@@ -7571,6 +8237,7 @@ function bindEvents() {
     setSourceFocus(!elements.workspace.classList.contains("source-focused"));
   });
   elements.createTexForm.addEventListener("submit", createTexFile);
+  elements.newTexFileName.addEventListener("input", updateCreateFileDialogKind);
   document.querySelector("#closeCreateTexButton").addEventListener("click", closeCreateTexDialog);
   document.querySelector("#cancelCreateTexButton").addEventListener("click", closeCreateTexDialog);
   elements.createTexDialog.addEventListener("cancel", (event) => {
@@ -7582,14 +8249,6 @@ function bindEvents() {
   elements.migrateBibliographyButton.addEventListener("click", migrateBibliographyForStructure);
   document.querySelector("#closeStructureButton").addEventListener("click", () => elements.structureDialog.close());
   document.querySelector("#cancelStructureButton").addEventListener("click", () => elements.structureDialog.close());
-  elements.splitForFormatButton.addEventListener("click", splitForFormatMigration);
-  elements.continueWithoutSplitButton.addEventListener("click", () => resolveFormatPreflight(true));
-  document.querySelector("#cancelFormatPreflightButton").addEventListener("click", () => resolveFormatPreflight(false));
-  document.querySelector("#closeFormatPreflightButton").addEventListener("click", () => resolveFormatPreflight(false));
-  elements.formatPreflightDialog.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    resolveFormatPreflight(false);
-  });
   elements.pdfScroll.addEventListener("pointerdown", beginPdfPan);
   elements.pdfScroll.addEventListener("pointermove", movePdfPan);
   elements.pdfScroll.addEventListener("pointerup", endPdfPan);
@@ -7597,6 +8256,7 @@ function bindEvents() {
   elements.pdfScroll.addEventListener("lostpointercapture", endPdfPan);
   elements.pdfScroll.addEventListener("wheel", zoomPdfWithWheel, { passive: false });
   elements.pdfScroll.addEventListener("dblclick", (event) => {
+    if (state.previewMode === "markdown") return;
     if (state.previewMode === "fast") void locateFastPreviewSelection(event);
     else if (state.compileInFlight || state.buildPreviewAvailable === false) {
       elements.buildDrawer.classList.remove("hidden");
@@ -7610,7 +8270,10 @@ function bindEvents() {
     } else void locatePdfSelection(event);
   });
   elements.pdfScroll.addEventListener("scroll", updateVisiblePdfPage, { passive: true });
-  window.addEventListener("resize", () => schedulePdfPanelResize());
+  window.addEventListener("resize", () => {
+    fitAllSegmentRows();
+    schedulePdfPanelResize();
+  });
   document.querySelector("#warningsButton").addEventListener("click", toggleBuildDrawer);
   document.querySelector("#closeWarningsButton").addEventListener("click", closeBuildDrawer);
   document.querySelectorAll(".mode-button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
@@ -7637,7 +8300,7 @@ function bindEvents() {
     }
   });
   document.querySelector("#testTranslationButton").addEventListener("click", (event) => testProvider("translation", event.currentTarget));
-  document.querySelector("#testFormatButton").addEventListener("click", (event) => testProvider("format", event.currentTarget));
+  document.querySelector("#testDiagnosisButton").addEventListener("click", (event) => testProvider("diagnosis", event.currentTarget));
 }
 
 function applyPBLaTexEntryView() {
@@ -7662,8 +8325,8 @@ function applyPBLaTexEntryView() {
 
 async function initialize() {
   bindEvents();
+  observeSegmentEditorSize();
   window.paperBridgeDesktop?.onCloseRequest?.(handleDesktopCloseRequest);
-  renderFormatFiles();
   applyEditorPreferences(false);
   applyWorkspaceSplit(false);
   setPdfZoom(state.pdfZoom, { persist: false, preserveViewport: false });

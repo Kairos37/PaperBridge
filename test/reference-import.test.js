@@ -160,7 +160,7 @@ test("reference API appends an entry to Bib and wires an unreferenced Bib file i
       return payload;
     };
     const provider = { type: "openai-compatible", baseUrl: "http://127.0.0.1:1", apiKey: "test", model: "test", jsonMode: true };
-    await request("/api/setup", { method: "POST", body: JSON.stringify({ source: { mode: "local", localPath: projectRoot }, translation: provider, format: provider }) });
+    await request("/api/setup", { method: "POST", body: JSON.stringify({ source: { mode: "local", localPath: projectRoot }, translation: provider, diagnosis: provider }) });
     const raw = "@article{centenaro2021survey,\n  title={A survey on satellite IoT},\n  author={Centenaro, Marco},\n  journal={IEEE Communications Surveys \\& Tutorials},\n  year={2021}\n}";
     const result = await request("/api/references/add", { method: "POST", body: JSON.stringify({ bibFile: "references.bib", raw, key: "centenaro2021survey" }) });
     assert.equal(result.entry.key, "centenaro2021survey");

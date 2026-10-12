@@ -1,6 +1,6 @@
 {
   "name": "paper-bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Local bilingual LaTeX editor with AI translation and Overleaf synchronization",
@@ -29,8 +29,9 @@
     "extract-zip": "^2.0.1",
     "katex": "^0.16.9",
     "lucide": "^1.24.0",
-    "pdfjs-dist": "^6.1.200",
-    "word-extractor": "^1.0.4"
+    "marked": "^18.1.0",
+    "mathlive": "^0.110.0",
+    "pdfjs-dist": "^6.1.200"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -40,8 +41,8 @@
   },
   "build": {
     "appId": "com.paperbridge.desktop",
-    "productName": "PaperBridge",
-    "artifactName": "PaperBridge-Setup.${ext}",
+    "productName": "PaperBridge with Git",
+    "artifactName": "PaperBridge-with-Git-Setup.${ext}",
     "asar": true,
     "asarUnpack": [
       "node_modules/dugite/git/**/*"

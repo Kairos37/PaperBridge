@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-test("the English review feature is absent while format and diagnosis configuration remains", async () => {
+test("review and format migration features are absent while compile diagnosis remains", async () => {
   const [indexHtml, appJs, serverJs] = await Promise.all([
     fs.readFile(path.join(process.cwd(), "public", "index.html"), "utf8"),
     fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8"),
@@ -11,8 +11,11 @@ test("the English review feature is absent while format and diagnosis configurat
   ]);
 
   assert.doesNotMatch(indexHtml, /data-mode="review"|id="reviewView"|id="runReviewButton"|testReviewButton/);
+  assert.doesNotMatch(indexHtml, /id="formatView"|formatPreflightDialog|data-provider="format"|testFormatButton/);
   assert.doesNotMatch(appJs, /\/api\/review|runReview|loadReview|renderReview/);
+  assert.doesNotMatch(appJs, /\/api\/format|analyzeTargetFormat|applyTargetFormat|formatPreflight/);
   assert.doesNotMatch(serverJs, /app\.(?:get|post)\("\/api\/review/);
-  assert.match(indexHtml, /data-provider="format"/);
-  assert.match(serverJs, /provider:\s*config\.format/);
+  assert.doesNotMatch(serverJs, /app\.(?:get|post)\("\/api\/format/);
+  assert.match(indexHtml, /data-provider="diagnosis"/);
+  assert.match(serverJs, /config\.diagnosis/);
 });

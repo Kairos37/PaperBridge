@@ -94,35 +94,6 @@ async function handleWindowClose() {
   if (handlingWindowClose || !mainWindow) return;
   handlingWindowClose = true;
   try {
-    const status = await requestRendererClose(false, 8_000);
-    if (!status.ok) {
-      await dialog.showMessageBox(mainWindow, {
-        type: "error",
-        title: "暂时无法退出",
-        message: status.message || "无法读取论文保存状态。",
-        buttons: ["继续编辑"]
-      });
-      return;
-    }
-    if (!status.dirty) {
-      forceWindowClose = true;
-      mainWindow.close();
-      return;
-    }
-    const operationText = status.undoCount
-      ? `本次有 ${status.undoCount} 步论文修改。保存后将清空本次撤销记录。`
-      : "仍有修改或后台任务尚未确认保存。";
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: "question",
-      title: "退出 PaperBridge",
-      message: "是否保存刚才所做的全部更改？",
-      detail: operationText,
-      buttons: ["保存并退出", "继续编辑"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true
-    });
-    if (choice.response !== 0) return;
     const saved = await requestRendererClose(true);
     if (!saved.ok) {
       await dialog.showMessageBox(mainWindow, {

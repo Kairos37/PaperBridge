@@ -46,7 +46,7 @@ test("project undo restores paragraph and file changes, keeps ten steps, and cle
     await post("/api/setup", {
       source: { mode: "local", localPath: projectRoot },
       translation: provider,
-      format: provider,
+      diagnosis: provider,
       autoCompile: false
     });
     assert.equal((await request("/api/undo/status")).count, 0);
@@ -138,7 +138,6 @@ test("desktop UI exposes project undo and saves before exiting", async () => {
   assert.match(appJs, /api\("\/api\/undo\/commit"/);
   assert.match(preload, /paperbridge:close-request/);
   assert.match(preload, /paperbridge:close-response/);
-  assert.match(electronMain, /是否保存刚才所做的全部更改/);
-  assert.match(electronMain, /保存并退出/);
-  assert.match(electronMain, /继续编辑/);
+  assert.match(electronMain, /const saved = await requestRendererClose\(true\)/);
+  assert.doesNotMatch(electronMain, /是否保存刚才所做的全部更改|保存并退出/);
 });

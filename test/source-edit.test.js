@@ -23,6 +23,7 @@ test("TeX source API saves atomically, rejects stale edits, and retains three ba
     await fs.writeFile(path.join(projectRoot, "refs.bib"), "@misc{example, title={Original reference}}\n", "utf8");
     await fs.writeFile(path.join(projectRoot, "unused.bib"), "@misc{unused, title={Unused reference}}\n", "utf8");
     await fs.writeFile(path.join(projectRoot, "unused.tex"), "Not part of the paper.\n", "utf8");
+    await fs.writeFile(path.join(projectRoot, "notes.md"), "# Draft notes\n\nOriginal Markdown.\n", "utf8");
 
     const server = await startServer({ port: 0, dataRoot, projectsRoot: path.join(root, "projects") });
     const request = async (url, options = {}) => {
@@ -51,7 +52,7 @@ test("TeX source API saves atomically, rejects stale edits, and retains three ba
     assert.equal(result.response.ok, true, result.payload.error);
     assert.deepEqual(result.payload.texFiles, ["main.tex", "section.tex"]);
     assert.deepEqual(result.payload.bibliographyFiles, ["refs.bib"]);
-    assert.deepEqual(result.payload.sourceFiles, ["main.tex", "section.tex", "unused.tex", "refs.bib"]);
+    assert.deepEqual(result.payload.sourceFiles, ["main.tex", "section.tex", "unused.tex", "refs.bib", "notes.md"]);
     assert.equal(result.payload.structure.mode, "modular");
     assert.deepEqual(result.payload.structure.workflow.local.files, ["section.tex"]);
 
@@ -107,6 +108,17 @@ test("TeX source API saves atomically, rejects stale edits, and retains three ba
     assert.equal(result.response.ok, true, result.payload.error);
     assert.match(await fs.readFile(path.join(projectRoot, "refs.bib"), "utf8"), /Updated reference/);
 
+    result = await request("/api/source?file=notes.md");
+    assert.equal(result.response.ok, true, result.payload.error);
+    assert.match(result.payload.content, /Original Markdown/);
+    result = await post("/api/source", {
+      file: "notes.md",
+      content: "# Draft notes\n\nUpdated **Markdown**.\n",
+      sourceHash: result.payload.sourceHash
+    });
+    assert.equal(result.response.ok, true, result.payload.error);
+    assert.match(await fs.readFile(path.join(projectRoot, "notes.md"), "utf8"), /Updated \*\*Markdown\*\*/);
+
     const unusedTex = await request("/api/source?file=unused.tex");
     assert.equal(unusedTex.response.ok, true, unusedTex.payload.error);
     assert.equal(unusedTex.payload.content, "Not part of the paper.\n");
@@ -129,6 +141,17 @@ test("TeX source editor soft-wraps long lines without adding a toggle", async ()
   assert.doesNotMatch(indexHtml, /sourceWrapButton/);
   assert.match(styles, /\.source-editor\s*\{[\s\S]*white-space:\s*pre-wrap;/);
   assert.match(styles, /\.source-editor\s*\{[\s\S]*overflow-wrap:\s*anywhere;/);
+  assert.match(styles, /\.source-highlight-layer,\s*\n\.source-editor\s*\{[\s\S]*scrollbar-gutter:\s*stable;/);
+  assert.match(styles, /\.source-highlight-layer\s*\{[\s\S]*overflow:\s*auto;/);
+});
+
+test("TeX source editor protects environment end lines from accidental line merging", async () => {
+  const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
+  assert.match(appJs, /function shouldProtectSourceBoundaryBackspace\(editor\)/);
+  assert.match(appJs, /event\.inputType !== "deleteContentBackward"/);
+  assert.match(appJs, /event\.key === "Backspace" && shouldProtectSourceBoundaryBackspace\(elements\.sourceEditor\)/);
+  assert.match(appJs, /table\\\*\?/);
+  assert.match(appJs, /tabularx/);
 });
 
 test("desktop workbench keeps one current project, syntax-highlighted TeX, and a paper-like fast preview", async () => {
@@ -149,6 +172,36 @@ test("desktop workbench keeps one current project, syntax-highlighted TeX, and a
   assert.match(styles, /\.syntax-command\s*\{\s*color:\s*var\(--code-command\)/);
   assert.match(styles, /\.syntax-comment\s*\{\s*color:\s*var\(--code-comment\)/);
   assert.match(styles, /\.fast-preview-document\s*\{[\s\S]*font-family:\s*var\(--font-paper\)/);
+});
+
+test("Markdown files open as editable source with a live preview and no LaTeX compilation", async () => {
+  const [packageJson, indexHtml, appJs, styles, serverJs] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), "package.json"), "utf8").then(JSON.parse),
+    fs.readFile(path.join(process.cwd(), "public", "index.html"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "public", "styles.css"), "utf8"),
+    fs.readFile(path.join(process.cwd(), "server.js"), "utf8")
+  ]);
+
+  assert.equal(typeof packageJson.dependencies.marked, "string");
+  assert.match(serverJs, /discoverEditableMarkdownFiles/);
+  assert.match(serverJs, /app\.use\("\/vendor\/marked"/);
+  assert.match(indexHtml, /id="sourceViewTitle"/);
+  assert.match(indexHtml, /id="previewTitle"/);
+  assert.match(appJs, /import \{ marked \} from "\/vendor\/marked\/marked\.esm\.js"/);
+  assert.match(appJs, /function renderMarkdownPreview/);
+  assert.match(appJs, /marked\.parse\(source\.content, \{ gfm: true, breaks: false \}\)/);
+  assert.match(appJs, /if \(isMarkdownFile\(\)\) \{[\s\S]*scheduleMarkdownPreview\(state\.sourceFile, 80\);[\s\S]*scheduleSourceAutosave\(\)/);
+  assert.match(appJs, /if \(isMarkdownFile\(source\.file\)\) scheduleMarkdownPreview\(source\.file, 0\)/);
+  assert.match(appJs, /if \(isMarkdownFile\(requestedFile\)\) scheduleMarkdownPreview\(requestedFile, 0\)/);
+  assert.match(styles, /\.markdown-preview-document\s*\{/);
+  assert.match(styles, /\.preview-panel\[data-preview-mode="markdown"\][\s\S]*#previewCompileButton/);
+  assert.match(styles, /\.source-panel\.markdown-source[\s\S]*#modularizeButton/);
+  assert.match(appJs, /function createFileExtension/);
+  assert.match(indexHtml, /没有扩展名时默认创建 \.tex 文件/);
+  assert.match(appJs, /insertionField\?\.classList\.toggle\("hidden", !isTex\)/);
+  assert.match(serverJs, /if \(!path\.posix\.extname\(normalized\)\) normalized \+= "\.tex"/);
+  assert.match(serverJs, /NEW_SOURCE_EXTENSIONS = new Set\(\["\.tex", "\.md", "\.markdown"\]\)/);
 });
 
 test("TeX source save avoids blocking on a full project refresh", async () => {
@@ -188,7 +241,7 @@ test("PDF export shows visible progress until save finishes", async () => {
 test("current TeX translation continues as a background file job after switching files", async () => {
   const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
   const start = appJs.indexOf("async function translateCurrentFile()");
-  const end = appJs.indexOf("function formatFileName", start);
+  const end = appJs.indexOf("async function exportPdf", start);
   const block = appJs.slice(start, end);
 
   assert.match(appJs, /fileTranslationJobs:\s*new Map\(\)/);
@@ -392,4 +445,17 @@ test("TeX source navigation and search visibly pulse the located selection", asy
   assert.match(styles, /\.segment-row\.pdf-located[\s\S]*animation:\s*pdf-located-pulse\s*2\.2s/);
   assert.match(styles, /15%,\s*20%,\s*45%,\s*50%\s*\{[\s\S]*?background:/);
   assert.match(styles, /@keyframes fast-preview-located-pulse/);
+});
+
+test("bilingual paragraph rows resize to show the complete Chinese draft", async () => {
+  const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
+  const fitStart = appJs.indexOf("function fitSegmentRow");
+  const fitBlock = appJs.slice(fitStart, appJs.indexOf("function applyEditorPreferences", fitStart));
+
+  assert.match(fitBlock, /Math\.ceil\(chinese\.scrollHeight\) \+ 4/);
+  assert.match(fitBlock, /english\.style\.height = `\$\{height\}px`/);
+  assert.match(fitBlock, /new ResizeObserver\(\(\) => fitAllSegmentRows\(\)\)/);
+  assert.match(fitBlock, /observe\(elements\.segmentList\)/);
+  assert.match(appJs, /function applyWorkspaceSplit[\s\S]*fitAllSegmentRows\(\)[\s\S]*schedulePdfPanelResize/);
+  assert.match(appJs, /window\.addEventListener\("resize", \(\) => \{[\s\S]*fitAllSegmentRows\(\)/);
 });

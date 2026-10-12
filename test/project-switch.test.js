@@ -60,8 +60,8 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     assert.equal(project.config.autoCompile, true);
     assert.equal(project.config.translation.model, "deepseek-v4-flash");
     assert.equal(project.config.translation.hasApiKey, true);
-    assert.equal(project.config.format.model, "deepseek-v4-pro");
-    assert.equal(project.config.format.hasApiKey, true);
+    assert.equal(project.config.diagnosis.model, "deepseek-v4-pro");
+    assert.equal(project.config.diagnosis.hasApiKey, true);
     assert.equal("review" in project.config, false);
 
     response = await request("/api/project/open", {
@@ -136,7 +136,7 @@ test("setup opens a new project without AI, Overleaf, or Git credentials", async
     const project = await response.json();
     assert.equal(project.config.mainTex, "main.tex");
     assert.equal(project.config.translation.hasApiKey, false);
-    assert.equal(project.config.format.hasApiKey, false);
+    assert.equal(project.config.diagnosis.hasApiKey, false);
     assert.equal(project.git.available, false);
     assert.match(await fs.readFile(path.join(project.config.projectRoot, "main.tex"), "utf8"), /\\begin\{document\}/);
   } finally {

@@ -149,6 +149,21 @@ test("creating a TeX source file lists and opens the new file even before it is 
   });
 });
 
+test("creating a Markdown source file preserves the requested extension and does not insert it into main.tex", async () => {
+  await withProject("paperbridge-041-create-markdown-", tablePaper, async ({ projectRoot, request }) => {
+    const result = await request("/api/source/create", {
+      file: "notes/research-notes.md",
+      insertion: { mode: "end" }
+    });
+    assert.equal(result.source.file, "notes/research-notes.md");
+    assert.equal(result.insertion, null);
+    assert.ok(result.project.sourceFiles.includes("notes/research-notes.md"));
+    assert.equal(await fs.readFile(path.join(projectRoot, "notes", "research-notes.md"), "utf8"), "");
+    const source = await request("/api/source?file=notes%2Fresearch-notes.md");
+    assert.equal(source.file, "notes/research-notes.md");
+  });
+});
+
 test("creating a TeX source file can insert it at the end of a selected section in main.tex", async () => {
   const sectionPaper = [
     "\\documentclass{article}",

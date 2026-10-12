@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PaperBridge</title>
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/vendor/mathlive/mathlive-static.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -67,13 +68,23 @@
 
       <div class="sidebar-section document-sidebar-section">
         <div class="sidebar-heading">
-          <span>DOCUMENTS</span>
+          <span>FILES</span>
           <div class="sidebar-heading-actions">
             <span class="count" id="documentCount">0</span>
-            <button class="icon-button small" id="createTexFileButton" type="button" title="新建 TeX 文件"><i data-lucide="file-plus-2"></i></button>
+            <button class="icon-button small" id="createTexFileButton" type="button" title="新建文件"><i data-lucide="file-plus-2"></i></button>
           </div>
         </div>
         <nav class="document-list" id="documentList"></nav>
+      </div>
+
+      <div class="sidebar-section section-sidebar-section">
+        <div class="sidebar-heading section-heading">
+          <span>SECTIONS</span>
+          <div class="sidebar-heading-actions">
+            <span class="count" id="sectionCount">0</span>
+          </div>
+        </div>
+        <nav class="section-list" id="sectionList"></nav>
       </div>
 
       <div class="sidebar-footer">
@@ -152,18 +163,18 @@
 
     <section class="editor-panel source-panel" id="sourceView">
       <div class="source-titlebar">
-        <h1>TeX / Bib 源码</h1>
+        <h1 id="sourceViewTitle">TeX / Bib 源码</h1>
         <button class="icon-button small" id="sourceFocusButton" type="button" title="专注编辑源码" aria-label="专注编辑源码" aria-pressed="false">
           <i data-lucide="maximize-2"></i>
         </button>
       </div>
       <div class="source-commandbar">
         <div class="source-file-tabs">
-          <label class="source-file-control source-file-tab" title="选择要编辑的 TeX 或 Bib 文件">
+          <label class="source-file-control source-file-tab" id="sourceFileControl" title="选择要编辑的 TeX、Bib 或 Markdown 文件">
             <i data-lucide="file-text"></i>
-            <select class="source-file-select" id="sourceFileSelect" aria-label="选择 TeX 或 Bib 源文件"></select>
+            <select class="source-file-select" id="sourceFileSelect" aria-label="选择 TeX、Bib 或 Markdown 源文件"></select>
           </label>
-          <button class="icon-button source-new-tab-button" id="sourceCreateTexButton" type="button" title="新建 TeX 文件" aria-label="新建 TeX 文件">
+          <button class="icon-button source-new-tab-button" id="sourceCreateTexButton" type="button" title="新建文件" aria-label="新建文件">
             <i data-lucide="plus"></i>
           </button>
         </div>
@@ -171,9 +182,16 @@
           <div class="source-tool-fields">
           </div>
           <div class="source-command-group" role="group" aria-label="源码操作">
-            <button class="button secondary" id="insertFigureSourceButton" type="button">
-              <i data-lucide="image-plus"></i><span>插入图片</span>
-            </button>
+            <div class="source-insert-menu">
+              <button class="button secondary" id="insertFigureSourceButton" type="button" aria-haspopup="menu" aria-expanded="false">
+                <i data-lucide="plus"></i><span>插入</span><i data-lucide="chevron-down"></i>
+              </button>
+              <div class="insert-content-menu hidden" id="sourceInsertMenu" role="menu">
+                <button type="button" role="menuitem" data-insert-kind="figure"><i data-lucide="image-plus"></i>插入图片</button>
+                <button type="button" role="menuitem" data-insert-kind="table"><i data-lucide="table-2"></i>插入表格</button>
+                <button type="button" role="menuitem" data-insert-kind="formula"><i data-lucide="square-function"></i>插入公式</button>
+              </div>
+            </div>
             <button class="button secondary" id="modularizeButton" type="button">
               <i data-lucide="files"></i><span>拆分章节</span>
             </button>
@@ -184,11 +202,21 @@
           <div class="file-meta source-status" id="sourceStatus" aria-live="polite">选择文件后可以直接修改</div>
         </div>
       </div>
+      <div class="project-file-preview hidden" id="projectFilePreview">
+        <div class="project-file-preview-header">
+          <div>
+            <strong id="projectFilePreviewTitle">项目文件预览</strong>
+            <span class="file-meta" id="projectFilePreviewMeta"></span>
+          </div>
+          <button class="button secondary" id="closeProjectFilePreviewButton" type="button">返回源码</button>
+        </div>
+        <div class="project-file-preview-body" id="projectFilePreviewBody"></div>
+      </div>
       <div class="source-editor-shell">
         <pre class="source-line-numbers" id="sourceLineNumbers" aria-hidden="true">1</pre>
         <div class="source-editor-stage">
           <pre class="source-highlight-layer" id="sourceHighlightLayer" aria-hidden="true"><code></code></pre>
-          <textarea class="source-editor" id="sourceEditor" aria-label="TeX 或 Bib 源码编辑器" autocomplete="off" autocapitalize="off" spellcheck="false" wrap="soft"></textarea>
+          <textarea class="source-editor" id="sourceEditor" aria-label="TeX、Bib 或 Markdown 源码编辑器" autocomplete="off" autocapitalize="off" spellcheck="false" wrap="soft"></textarea>
         </div>
       </div>
     </section>
@@ -200,15 +228,6 @@
           <div class="file-meta" id="referencesMeta">读取当前 Bib 文件和正文引用</div>
         </div>
         <div class="toolbar-actions">
-          <button class="button secondary" id="refreshReferencesButton" type="button">
-            <i data-lucide="refresh-cw"></i><span>刷新文献</span>
-          </button>
-          <button class="button secondary" id="addReferenceButton" type="button">
-            <i data-lucide="plus"></i><span>新增文献</span>
-          </button>
-          <button class="button primary" id="insertSelectedReferenceButton" type="button">
-            <i data-lucide="quote"></i><span>插入到光标</span>
-          </button>
           <button class="icon-button" id="closeReferencesButton" type="button" title="关闭参考文献，返回 PDF" aria-label="关闭参考文献，返回 PDF">
             <i data-lucide="x"></i>
           </button>
@@ -218,7 +237,7 @@
         <section class="references-list-panel">
           <label class="references-search">
             <i data-lucide="search"></i>
-            <input id="referencesSearch" type="search" autocomplete="off" placeholder="搜索标题、作者、方法关键词、venue、年份或 citation key">
+            <input id="referencesSearch" type="search" autocomplete="off" placeholder="搜索 DOI、标题、作者、年份">
           </label>
           <div class="references-alerts" id="referencesAlerts"></div>
           <div class="references-list" id="referencesList">
@@ -227,52 +246,6 @@
         </section>
         <section class="reference-detail-panel" id="referenceDetail">
           <div class="empty-state">选择一篇文献后查看 BibTeX 源码和字段解释。</div>
-        </section>
-      </div>
-    </section>
-
-    <section class="editor-panel format-panel hidden" id="formatView">
-      <div class="panel-toolbar">
-        <div>
-          <h1>投稿格式迁移</h1>
-          <div class="file-meta" id="formatMeta">尚未分析目标格式</div>
-        </div>
-        <button class="button secondary" id="addFormatFilesButton" type="button">
-          <i data-lucide="paperclip"></i><span>添加格式文件</span>
-        </button>
-      </div>
-      <div class="format-scroll">
-        <section class="format-section">
-          <label class="field">
-            <span>目标格式要求</span>
-            <textarea class="format-requirements" id="formatRequirements" placeholder="例如：改为双栏、正文 10pt、匿名审稿、参考文献使用 IEEE 编号格式……"></textarea>
-          </label>
-          <div class="format-file-list" id="formatFileList">
-            <div class="format-empty">未添加格式文件</div>
-          </div>
-          <div class="format-actions">
-            <button class="button primary" id="analyzeFormatButton" type="button">
-              <i data-lucide="scan-search"></i><span>分析格式差异</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="format-section hidden" id="formatAnalysisSection">
-          <div class="format-analysis-header">
-            <div>
-              <h2 id="formatTargetName">目标投稿格式</h2>
-              <div class="file-meta" id="formatAnalysisSummary"></div>
-            </div>
-            <span class="format-status" id="formatStatus">已分析</span>
-          </div>
-          <div class="format-workflow" id="formatWorkflow"></div>
-          <div class="format-difference-list" id="formatDifferenceList"></div>
-          <div class="format-warning-list" id="formatWarningList"></div>
-          <div class="format-actions">
-            <button class="button primary" id="applyFormatButton" type="button">
-              <i data-lucide="wand-sparkles"></i><span>应用到全文并编译</span>
-            </button>
-          </div>
         </section>
       </div>
     </section>
@@ -295,7 +268,7 @@
     <aside class="preview-panel">
       <div class="preview-toolbar">
         <div>
-          <div class="preview-title">英文排版</div>
+          <div class="preview-title" id="previewTitle">英文排版</div>
           <div class="page-status" id="pageStatus">PDF 未加载</div>
         </div>
         <div class="preview-actions">
@@ -392,7 +365,7 @@
         </div>
 
         <div class="source-panel" data-source-panel="new">
-          <div class="setup-note">将在 PaperBridge 数据目录中创建一个包含 main.tex 的空白项目。项目名称可以留空，之后仍可修改。</div>
+          <div class="setup-note">将在 PaperBridge 数据目录中创建一个包含 main.tex 和 reference.bib 的空白项目。项目名称可以留空，之后仍可修改。</div>
         </div>
 
         <div class="source-panel hidden" data-source-panel="git">
@@ -476,7 +449,7 @@
 
       <section class="setup-section" id="setupAiSection">
         <div class="setup-section-heading"><span class="setup-step">3</span><strong>配置 AI（可选）</strong></div>
-        <div class="setup-note setup-optional-note">可以全部留空并直接进入项目。需要翻译、格式迁移或错误诊断时，再到设置中配置 API。</div>
+        <div class="setup-note setup-optional-note">可以全部留空并直接进入项目。需要翻译或错误诊断时，再到设置中配置 API。</div>
         <div class="setup-provider-grid">
           <label class="field">
             <span>API 服务类型</span>
@@ -654,20 +627,71 @@
     <form method="dialog" class="figure-form" id="figureForm">
       <div class="dialog-header">
         <div>
-          <h2>插入图片</h2>
+          <h2 id="structureDialogTitle">插入图片</h2>
           <div class="file-meta" id="figureAnchorMeta">选择图片和排版位置</div>
         </div>
         <button class="icon-button" id="closeFigureButton" type="button" title="关闭"><i data-lucide="x"></i></button>
       </div>
-      <div class="figure-dialog-body">
-        <label class="field wide">
-          <span>图片链接或路径</span>
-          <textarea id="figureImagesInput" rows="5" placeholder="每行一张图片，可以是 https 链接、本地绝对路径，或项目内相对路径"></textarea>
-        </label>
-        <label class="field wide">
-          <span>位置和排版要求</span>
-          <textarea id="figurePlacementInput" rows="3" placeholder="例如：插入第二页左列最上方，两张图片并排放；或：跨栏，放在本节顶部"></textarea>
-        </label>
+      <label class="structure-type-field field">
+        <span>内容类型</span>
+        <select id="structureTypeInput">
+          <option value="figure">图片</option>
+          <option value="table">表格</option>
+          <option value="formula">公式</option>
+        </select>
+      </label>
+      <div class="figure-dialog-body" id="figureOptions">
+        <div class="figure-layout-summary" id="figureLayoutSummary">根据当前模板选择图片布局；最终页码仍由 LaTeX 决定。</div>
+        <div class="figure-layout-controls">
+          <label class="field">
+            <span>栏宽</span>
+            <select id="figureSpanInput">
+              <option value="column">单栏</option>
+              <option value="span">跨栏</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>对齐</span>
+            <select id="figureAlignmentInput">
+              <option value="center">居中</option>
+              <option value="left">靠左</option>
+              <option value="right">靠右</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>排布</span>
+            <select id="figureArrangementInput">
+              <option value="side-by-side">并排</option>
+              <option value="stack">上下排列</option>
+              <option value="grid">网格</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>图片数量</span>
+            <input id="figureImageCountInput" type="text" min="1" max="24" value="1" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>每行数量</span>
+            <input id="figureColumnsInput" type="text" min="1" max="4" value="1" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>位置</span>
+            <select id="figurePositionInput">
+              <option value="top">栏顶部</option>
+              <option value="here">当前位置</option>
+              <option value="bottom">栏底部</option>
+            </select>
+          </label>
+        </div>
+        <div class="figure-grid-label">点击每个方框选择项目中的图片；浅灰色表示未选择，浅绿色表示已选择。</div>
+        <div class="figure-grid" id="figureGrid" aria-label="图片布局预览"></div>
+        <div class="figure-external-row">
+          <button class="button secondary" id="chooseExternalFigureButton" type="button"><i data-lucide="folder-open"></i><span>选择项目外图片</span></button>
+          <input id="figureExternalInput" type="file" accept=".pdf,.png,.jpg,.jpeg,.svg,.eps" multiple hidden>
+          <span class="field-note">外部图片会复制到当前项目的 figures/paperbridge-images 文件夹。</span>
+        </div>
+        <textarea id="figureImagesInput" hidden></textarea>
+        <textarea id="figurePlacementInput" hidden></textarea>
         <div class="settings-grid compact">
           <label class="field">
             <span>Caption</span>
@@ -679,6 +703,29 @@
           </label>
         </div>
         <small class="field-note">PaperBridge 会尽量转换为 LaTeX 浮动体位置；最终页码和列位置仍由 LaTeX 编译结果决定。</small>
+      </div>
+      <div class="structure-dialog-body hidden" id="tableOptions">
+        <div class="structure-controls">
+          <label class="field"><span>行数</span><input id="insertTableRows" type="text" inputmode="numeric" value="3" autocomplete="off" aria-label="表格行数"></label>
+          <label class="field"><span>列数</span><input id="insertTableColumns" type="text" inputmode="numeric" value="3" autocomplete="off" aria-label="表格列数"></label>
+          <label class="field"><span>栏宽</span><select id="insertTableSpan"><option value="column">单栏</option><option value="span">跨栏</option></select></label>
+          <label class="field"><span>边框</span><select id="insertTableBorder"><option value="rules">三线表</option><option value="grid">全部边框</option></select></label>
+        </div>
+        <div class="table-editor-scroll insert-table-grid" id="insertTableGrid" aria-label="表格内容"></div>
+        <div class="settings-grid compact">
+          <label class="field"><span>表格标题</span><input id="insertTableCaption" type="text" autocomplete="off"></label>
+          <label class="field"><span>Label</span><input id="insertTableLabel" type="text" placeholder="tab:results" autocomplete="off"></label>
+        </div>
+      </div>
+      <div class="structure-dialog-body hidden" id="formulaOptions">
+        <div class="formula-palette" id="formulaPalette" role="toolbar" aria-label="公式符号"></div>
+        <div class="formula-mathfield-shell" id="formulaMathfieldShell"></div>
+        <div class="formula-keyboard" id="formulaKeyboard"></div>
+        <div class="structure-controls">
+          <label class="field"><span>编号</span><select id="insertFormulaNumbered"><option value="numbered">自动编号</option><option value="none">不编号</option></select></label>
+          <label class="field"><span>Label</span><input id="insertFormulaLabel" type="text" placeholder="eq:example" autocomplete="off"></label>
+        </div>
+        <label class="field"><span>LaTeX</span><textarea class="formula-latex-source" id="insertFormulaLatex" spellcheck="false" aria-label="公式 LaTeX"></textarea></label>
       </div>
       <div class="dialog-actions">
         <button class="button secondary" id="cancelFigureButton" type="button">取消</button>
@@ -858,30 +905,6 @@
     </form>
   </dialog>
 
-  <dialog class="format-preflight-dialog" id="formatPreflightDialog">
-    <div class="dialog-header">
-      <div>
-        <h2>格式迁移前的论文结构</h2>
-        <div class="file-meta">检查结构 → 按章节处理 → 迁移并编译</div>
-      </div>
-      <button class="icon-button" id="closeFormatPreflightButton" type="button" title="关闭"><i data-lucide="x"></i></button>
-    </div>
-    <div class="format-preflight-body">
-      <div class="structure-summary" id="formatPreflightSummary"></div>
-      <div class="structure-flow" id="formatPreflightFlow"></div>
-      <div class="format-preflight-warning" id="formatPreflightWarning"></div>
-    </div>
-    <div class="dialog-actions format-preflight-actions">
-      <button class="button secondary" id="cancelFormatPreflightButton" type="button">取消</button>
-      <button class="button secondary" id="continueWithoutSplitButton" type="button">
-        <i data-lucide="arrow-right"></i><span>不拆分，继续</span>
-      </button>
-      <button class="button primary" id="splitForFormatButton" type="button">
-        <i data-lucide="split"></i><span>一键拆分并继续</span>
-      </button>
-    </div>
-  </dialog>
-
   <dialog class="main-tex-dialog" id="mainTexDialog">
     <form method="dialog" class="main-tex-form" id="mainTexForm">
       <div class="dialog-header">
@@ -907,19 +930,19 @@
     <form class="create-tex-form" id="createTexForm">
       <div class="dialog-header">
         <div>
-          <h2>新建 TeX 文件</h2>
-          <div class="file-meta">创建文件，并选择是否在主 TeX 中引用</div>
+          <h2>新建文件</h2>
+          <div class="file-meta">按文件名后缀创建 TeX 或 Markdown 文件</div>
         </div>
         <button class="icon-button" id="closeCreateTexButton" type="button" title="关闭"><i data-lucide="x"></i></button>
       </div>
       <div class="create-tex-body">
         <label class="field">
           <span>文件名</span>
-          <input id="newTexFileName" type="text" value="sections/new-section.tex" placeholder="例如 sections/method.tex" autocomplete="off" required>
-          <small class="field-note">文件会创建在当前论文项目内；省略 .tex 时会自动补全。</small>
+          <input id="newTexFileName" type="text" value="sections/new-section.tex" placeholder="例如 sections/method.tex 或 notes.md" autocomplete="off" required>
+          <small class="field-note">请填写完整文件名；没有扩展名时默认创建 .tex 文件。</small>
         </label>
         <label class="field">
-          <span>插入到主 TeX 的位置</span>
+          <span>插入到主 TeX 的位置（仅 .tex 文件）</span>
           <select id="newTexInsertion"></select>
           <small class="field-note" id="newTexInsertionNote">选择章节时，会在该章节内容末尾写入 \input{文件名}。</small>
         </label>
@@ -1000,7 +1023,7 @@
 
       <div class="settings-section">
         <div class="settings-section-title"><i data-lucide="stethoscope"></i><span>编译错误诊断</span></div>
-        <div class="provider-grid" data-provider="format"></div>
+        <div class="provider-grid" data-provider="diagnosis"></div>
       </div>
 
       <label class="toggle-row">
@@ -1012,7 +1035,7 @@
         <button type="button" class="button secondary" id="testTranslationButton">
           <i data-lucide="plug-zap"></i><span>测试翻译接口</span>
         </button>
-        <button type="button" class="button secondary" id="testFormatButton">
+        <button type="button" class="button secondary" id="testDiagnosisButton">
           <i data-lucide="plug-zap"></i><span>测试诊断接口</span>
         </button>
         <button type="submit" class="button primary" value="default">
