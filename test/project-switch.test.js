@@ -57,7 +57,7 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     assert.equal(project.config.hasOverleafToken, true);
     assert.equal(project.config.gitUsername, "saved-git-user");
     assert.equal(project.config.hasGitToken, true);
-    assert.equal(project.config.autoCompile, true);
+    assert.equal(project.config.autoCompile, false);
     assert.equal(project.config.translation.model, "deepseek-v4-flash");
     assert.equal(project.config.translation.hasApiKey, true);
     assert.equal(project.config.diagnosis.model, "deepseek-v4-pro");

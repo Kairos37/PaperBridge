@@ -340,19 +340,18 @@ test("fast preview probe inserts a section as a small patch instead of a full re
   assert.ok(patches.length < 10);
 });
 
-test("fast preview renders figure environments as layout-aware image blocks", async () => {
-  const [appJs, styles] = await Promise.all([
+test("paper and figure edits keep the compiled PDF viewer instead of scheduling a fast preview", async () => {
+  const [appJs, indexHtml] = await Promise.all([
     fs.readFile("public/app.js", "utf8"),
-    fs.readFile("public/styles.css", "utf8")
+    fs.readFile("public/index.html", "utf8")
   ]);
-  assert.match(appJs, /function fastPreviewFigureMarkup\(source, envName, sourceFile\)/);
-  assert.match(appJs, /envName\.endsWith\("\*"\)/);
-  assert.match(appJs, /fast-preview-figure-grid/);
-  assert.match(appJs, /\/api\/project\/file\?path=/);
-  assert.match(appJs, /fast-preview-pdf/);
-  assert.match(appJs, /function registerFastPreviewFigures\(root\)/);
-  assert.match(appJs, /pdfjsLib\.getDocument\(\{ url \}\)/);
-  assert.match(styles, /\.fast-preview-figure-grid\s*\{/);
-  assert.match(styles, /\.fast-preview-pdf\s*\{/);
-  assert.match(styles, /grid-template-columns:\s*repeat\(var\(--preview-columns/);
+  assert.match(appJs, /previewMode:\s*"pdf"/);
+  assert.doesNotMatch(appJs, /scheduleFastPreview|scheduleMarkdownPreview/);
+  const insertStart = appJs.indexOf("async function submitFigureInsertion");
+  const insertEnd = appJs.indexOf("\nfunction ", insertStart + 1);
+  assert.ok(insertStart >= 0, "figure insertion handler remains available");
+  const insertBlock = appJs.slice(insertStart, insertEnd);
+  assert.doesNotMatch(insertBlock, /renderFastPreview|setPreviewMode\("fast"\)|compilePaper\(|\/api\/compile/);
+  assert.match(indexHtml, /id="previewModeLabel">正式 PDF<\/span>/);
+  assert.doesNotMatch(indexHtml, /快速预览/);
 });

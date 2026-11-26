@@ -3,15 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { getDependencyStatus } from "../lib/project.js";
 import { startServer, stopServer } from "../server.js";
 
-test("inline references migrate to Bib and no longer block chapter modularization", async (t) => {
-  const dependencies = await getDependencyStatus();
-  if (dependencies.compiler === "missing") {
-    t.skip("No LaTeX compiler is available.");
-    return;
-  }
+test("inline references migrate to Bib and no longer block chapter modularization without compiling", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperbridge-bibliography-api-"));
   const projectRoot = path.join(root, "project");
   try {
@@ -69,7 +63,7 @@ test("inline references migrate to Bib and no longer block chapter modularizatio
       confirmed: true,
       fingerprint: preview.bibliographyMigration.fingerprint
     });
-    assert.equal(migrated.build.success, true);
+    assert.equal(migrated.build, null);
     assert.ok(migrated.project.sourceFiles.includes("references.bib"));
     assert.match((await request("/api/source?file=references.bib")).content, /@misc\{example,/);
 
@@ -81,13 +75,15 @@ test("inline references migrate to Bib and no longer block chapter modularizatio
       confirmed: true,
       fingerprint: preview.fingerprint
     });
-    assert.equal(modularized.build.success, true);
+    assert.equal(modularized.build, null);
     assert.deepEqual(modularized.project.sourceFiles, ["main.tex", "introduction.tex", "method.tex", "references.bib"]);
     const finalMain = await fs.readFile(path.join(projectRoot, "main.tex"), "utf8");
     assert.doesNotMatch(finalMain, /thebibliography/);
     assert.match(finalMain, /\\input\{introduction\}/);
     assert.match(finalMain, /\\bibliography\{references\}/);
     assert.match(finalMain, /\\nocite\{uncited\}/);
+    await assert.rejects(fs.access(path.join(projectRoot, "main.pdf")));
+    await assert.rejects(fs.access(path.join(projectRoot, "main.log")));
   } finally {
     await stopServer();
     const relative = path.relative(os.tmpdir(), root);

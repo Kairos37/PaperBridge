@@ -2,13 +2,13 @@
 
 PaperBridge 是一款在 Windows 本地运行的中英对照 LaTeX 论文编辑器。中文工作稿和英文源码按段落对应，你可以先用中文推敲表述，再更新英文 LaTeX、编译检查 PDF。收到审阅人发回的 PDF 后，还可以把批注导回项目继续修改。
 
-[下载 Windows 安装包](https://github.com/Kairos37/PaperBridge/releases)
+[下载 Windows 1.0.0 安装包](https://github.com/Kairos37/PaperBridge/releases/tag/v1.0.0)
 
 ![PaperBridge 1.0.0 中英对照工作区，左侧是项目文件，中间是中英文段落，右侧是由示例论文编译的 PDF](docs/images/paperbridge-overview.png)
 
 ## 安装 Windows 版
 
-在 GitHub Releases 找到 `windows-v1.0.0`，从 **Assets** 下载一份 Windows x64 安装包。
+在 `v1.0.0` 发布页的 **Assets** 中下载一份 Windows x64 安装包。
 
 | 版本 | 安装文件 | 适用场景 |
 | --- | --- | --- |

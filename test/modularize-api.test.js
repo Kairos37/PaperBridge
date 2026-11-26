@@ -3,15 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { getDependencyStatus } from "../lib/project.js";
 import { startServer, stopServer } from "../server.js";
 
-test("modularization API preserves Chinese drafts and exposes the referenced Bib file", async (t) => {
-  const dependencies = await getDependencyStatus();
-  if (dependencies.compiler === "missing") {
-    t.skip("No LaTeX compiler is available.");
-    return;
-  }
+test("modularization API preserves Chinese drafts and exposes the referenced Bib file without compiling", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperbridge-modularize-api-"));
   const projectRoot = path.join(root, "project");
   try {
@@ -84,7 +78,9 @@ test("modularization API preserves Chinese drafts and exposes the referenced Bib
       confirmed: true,
       fingerprint: preview.fingerprint
     });
-    assert.equal(result.build.success, true);
+    assert.equal(result.build, null);
+    await assert.rejects(fs.access(path.join(projectRoot, "main.pdf")));
+    await assert.rejects(fs.access(path.join(projectRoot, "main.log")));
     assert.deepEqual(result.project.sourceFiles, ["main.tex", "introduction.tex", "related_work.tex", "refs.bib"]);
     assert.equal((await request("/api/document?file=introduction.tex")).segments[0].chinese, "这是引言的中文工作稿。");
     assert.equal((await request("/api/document?file=related_work.tex")).segments[0].chinese, "这是相关工作的中文工作稿。");

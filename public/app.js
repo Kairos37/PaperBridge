@@ -2,6 +2,15 @@ import * as pdfjsLib from "/vendor/pdfjs/pdf.mjs";
 import { marked } from "/vendor/marked/marked.esm.js";
 import { graphicsCommands, graphicsSearchPaths, resolveGraphicPath } from "./latex-graphics.js";
 import { createFormulaLatex, createTableLatex, parseLatexTable } from "./latex-structures.js";
+import { mountReviewCenter } from "./review-center.js";
+import { selectedPdfReview } from "./review-preview.js";
+import { CITE_OPEN_PATTERN } from "./reference-data.js";
+import { mountReferenceWorkbench } from "./reference-workbench.js";
+import { createCitationTools } from "./citation-tools.js";
+
+let reviewCenter;
+let referenceWorkbench;
+let citationTools;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/pdf.worker.mjs";
 
@@ -9,9 +18,11 @@ const MAX_TERMINOLOGY_ENTRIES = 48;
 const MAX_FIGURE_IMAGE_COUNT = 24;
 const MAX_PARALLEL_SEGMENT_TRANSLATIONS = 6;
 const CITATION_DRAG_TYPE = "application/x-paperbridge-citation";
+const CITATION_SOURCE_TOKEN = new RegExp("^" + CITE_OPEN_PATTERN + "[^{}]*\\}", "i");
 const UNDO_TRACKED_URLS = new Set([
   "/api/project/bibliography/migrate",
   "/api/references/add",
+  "/api/references/change",
   "/api/project/modularize/apply",
   "/api/source/create",
   "/api/source",
@@ -47,18 +58,32 @@ const FAST_PREVIEW_PROSE_ENVS = new Set([
   "proof", "theorem", "lemma", "proposition", "corollary", "definition", "example", "remark", "abstract"
 ]);
 
+import { describeDraftDiff, readingFragment, readingSource, renderDisplayFormula } from "./translation-reading.js";
+import { belongsToTranslationSection, summarizeTranslationSections } from "./translation-outline.js";
+
 const state = {
+  translationLayout: localStorage.getItem("paperBridge.translationLayout") === "wide" ? "wide" : "compare",
+  translationExpanded: false,
+  translationDirection: localStorage.getItem("paperBridge.translationDirection") === "en" ? "en" : "zh",
   project: null,
   currentFile: null,
   currentDocument: null,
+  documentLoadToken: 0,
   warnings: [],
   mode: "source",
   referencesOpen: false,
+  sidebarPanel: localStorage.getItem("paperBridge.sidebarPanel") ?? "files",
+  sidebarWidth: Math.min(480, Math.max(120, Number(localStorage.getItem("paperBridge.sidebarWidth")) || 160)),
+  bilingualLayout: localStorage.getItem("paperBridge.bilingualLayout") === "vertical" ? "vertical" : "horizontal",
+  reviewSelection: null,
+  reviewPdfVersion: "",
   saveTimers: new Map(),
   pendingWrites: 0,
   undoCount: 0,
   undoLabel: "",
-  previewMode: "fast",
+  previewMode: "pdf",
+  compileOnOpenPending: true,
+  pdfRenderKey: "",
   fastPreviewFile: "",
   fastPreviewCache: [],
   fastPreviewTimer: 0,
@@ -66,6 +91,10 @@ const state = {
   fastPreviewMathObserver: null,
   fastPreviewFigureObserver: null,
   fastPreviewGraphicsPaths: [],
+  markdownScrollSync: {
+    origin: "",
+    lockUntil: 0
+  },
   pdfRenderToken: 0,
   pdfDocument: null,
   pdfObserver: null,
@@ -88,12 +117,13 @@ const state = {
   pdfExportToken: 0,
   buildPreviewAvailable: null,
   compileInFlight: false,
-  editorFontSize: Math.min(20, Math.max(14, Number(localStorage.getItem("paperBridge.editorFontSize") || 16))),
+  editorFontSize: Math.min(14, Math.max(12, Math.round(Number(localStorage.getItem("paperBridge.editorFontSize")) || 13))),
   bilingualSplit: Math.min(70, Math.max(30, Number(localStorage.getItem("paperBridge.bilingualSplit") || 50))),
   workspaceSplit: Math.min(72, Math.max(32, Number(localStorage.getItem("paperBridge.workspaceSplit") || 54))),
   resizeFrame: 0,
   segmentResizeObserver: null,
   projectRefreshTimer: 0,
+  projectFileCheck: false,
   setupMode: "initial",
   storageRootSelected: false,
   paragraphAnchor: null,
@@ -117,22 +147,24 @@ const state = {
   sourceEol: "\n",
   sourceSavedContent: "",
   sourceDirty: false,
+  sourceMissing: false,
   sourceAutosaveTimer: 0,
+  sourceEditorRefreshFrame: 0,
   sourceSaveInFlight: false,
   sourceSavePending: false,
   sourceSearchQuery: "",
   sourceSearchMatches: [],
   sourceSearchIndex: -1,
+  sourceSearchRequest: 0,
+  sourceSearchContents: new Map(),
+  expandedProjectFolders: new Set(),
+  projectTreeInitialized: false,
   sourceHighlightTimer: 0,
   figureSelectedSlot: 0,
   figureSlots: [],
   figureNumberInputChanged: false,
   structureType: "figure",
   formulaMathfield: null,
-  references: null,
-  selectedReferenceKey: "",
-  referenceAutoAddQuery: "",
-  referenceSearchTimer: 0,
   citationTarget: null,
   structurePreview: null,
   compileDiagnosisToken: 0,
@@ -147,6 +179,9 @@ const state = {
 const elements = {
   workspace: document.querySelector(".workspace"),
   sidebar: document.querySelector(".sidebar"),
+  sidebarPanelTitle: document.querySelector("#sidebarPanelTitle"),
+  sidebarResizeHandle: document.querySelector("#sidebarResizeHandle"),
+  reviewSourceGutter: document.querySelector("#reviewSourceGutter"),
   projectName: document.querySelector("#projectName"),
   topCurrentFile: document.querySelector("#topCurrentFile"),
   headerSaveState: document.querySelector("#headerSaveState"),
@@ -159,11 +194,14 @@ const elements = {
   projectSwitcherButton: document.querySelector("#projectSwitcherButton"),
   projectSwitcherPopover: document.querySelector("#projectSwitcherPopover"),
   projectSwitcherList: document.querySelector("#projectSwitcherList"),
+  openProjectFolderButton: document.querySelector("#openProjectFolderButton"),
   documentCount: document.querySelector("#documentCount"),
   documentList: document.querySelector("#documentList"),
   sectionCount: document.querySelector("#sectionCount"),
   sectionList: document.querySelector("#sectionList"),
   translationProgress: document.querySelector("#translationProgress"),
+  translationProgressCount: document.querySelector("#translationProgressCount"),
+  translationProgressPercent: document.querySelector("#translationProgressPercent"),
   translationProgressBar: document.querySelector("#translationProgressBar"),
   terminologyButton: document.querySelector("#terminologyButton"),
   fileTranslationProgress: document.querySelector("#fileTranslationProgress"),
@@ -174,7 +212,6 @@ const elements = {
   currentFile: document.querySelector("#currentFile"),
   fileMeta: document.querySelector("#fileMeta"),
   editorFontSize: document.querySelector("#editorFontSize"),
-  translationSectionSelect: document.querySelector("#translationSectionSelect"),
   translateSectionButton: document.querySelector("#translateSectionButton"),
   bilingualHeadings: document.querySelector("#bilingualHeadings"),
   splitHandle: document.querySelector("#splitHandle"),
@@ -227,15 +264,16 @@ const elements = {
   sourceInsertMenu: document.querySelector("#sourceInsertMenu"),
   modularizeButton: document.querySelector("#modularizeButton"),
   sourceSearchInput: null,
+  sourceReplaceInput: null,
+  sourceReplacePanel: null,
+  sourceSearchResults: null,
+  sourceSearchReplaceButton: null,
+  sourceSearchReplaceAllButton: null,
   sourceSearchCount: null,
   sourceSearchPreviousButton: null,
   sourceSearchNextButton: null,
   referencesView: document.querySelector("#referencesView"),
-  referencesMeta: document.querySelector("#referencesMeta"),
   referencesSearch: document.querySelector("#referencesSearch"),
-  referencesAlerts: document.querySelector("#referencesAlerts"),
-  referencesList: document.querySelector("#referencesList"),
-  referenceDetail: document.querySelector("#referenceDetail"),
   closeReferencesButton: document.querySelector("#closeReferencesButton"),
   setupDialog: document.querySelector("#setupDialog"),
   setupForm: document.querySelector("#setupForm"),
@@ -335,18 +373,6 @@ const elements = {
   referenceInsertForm: document.querySelector("#referenceInsertForm"),
   referenceInsertMeta: document.querySelector("#referenceInsertMeta"),
   referenceInsertSearch: document.querySelector("#referenceInsertSearch"),
-  referenceInsertList: document.querySelector("#referenceInsertList"),
-  referenceAddDialog: document.querySelector("#referenceAddDialog"),
-  referenceAddForm: document.querySelector("#referenceAddForm"),
-  referenceAddUrl: document.querySelector("#referenceAddUrl"),
-  referenceAddBibFile: document.querySelector("#referenceAddBibFile"),
-  referenceAddKey: document.querySelector("#referenceAddKey"),
-  referenceAddBib: document.querySelector("#referenceAddBib"),
-  referenceAddStatus: document.querySelector("#referenceAddStatus"),
-  referenceLookupButton: document.querySelector("#referenceLookupButton"),
-  referenceAddSubmitButton: document.querySelector("#addReferenceButtonSubmit"),
-  closeReferenceAddButton: document.querySelector("#closeReferenceAddButton"),
-  cancelReferenceAddButton: document.querySelector("#cancelReferenceAddButton"),
   toastRegion: document.querySelector("#toastRegion")
 };
 
@@ -355,13 +381,10 @@ function refreshIcons() {
 }
 
 function fitSegmentRow(row) {
-  const chinese = row.querySelector(".segment-textarea.chinese");
-  const english = row.querySelector(".segment-textarea.english");
-  if (!chinese || !english) return;
-  chinese.style.height = "auto";
-  const height = Math.max(196, Math.ceil(chinese.scrollHeight) + 4);
-  chinese.style.height = `${height}px`;
-  english.style.height = `${height}px`;
+  for (const editor of row.querySelectorAll(".segment-edit-surface:not([hidden]) textarea")) {
+    editor.style.height = "auto";
+    editor.style.height = Math.ceil(editor.scrollHeight) + "px";
+  }
 }
 
 function fitAllSegmentRows() {
@@ -380,7 +403,7 @@ function observeSegmentEditorSize() {
 function applyEditorPreferences(persist = true) {
   document.documentElement.style.setProperty("--editor-font-size", `${state.editorFontSize}px`);
   document.documentElement.style.setProperty("--bilingual-split", `${state.bilingualSplit}%`);
-  elements.editorFontSize.textContent = String(state.editorFontSize);
+  if (elements.editorFontSize) elements.editorFontSize.textContent = String(state.editorFontSize);
   if (persist) {
     localStorage.setItem("paperBridge.editorFontSize", String(state.editorFontSize));
     localStorage.setItem("paperBridge.bilingualSplit", String(state.bilingualSplit));
@@ -388,9 +411,58 @@ function applyEditorPreferences(persist = true) {
   fitAllSegmentRows();
 }
 
-function changeEditorFont(delta) {
-  state.editorFontSize = Math.min(20, Math.max(14, state.editorFontSize + delta));
-  applyEditorPreferences();
+function setSidebarPanel(panel, { persist = true } = {}) {
+  const labels = { files: "资源管理器", comments: "批注" };
+  const selected = Object.hasOwn(labels, panel) ? panel : "";
+  const anchor = state.pdfDocument ? capturePdfViewportAnchor() : null;
+  state.sidebarPanel = selected;
+  if (state.referencesOpen) setReferencesOpen(false);
+  elements.workspace.classList.toggle("sidebar-collapsed", !selected);
+  elements.sidebar.classList.toggle("hidden", !selected);
+  elements.sidebar.dataset.panel = selected;
+  elements.sidebarPanelTitle.textContent = labels[selected] || "文件与工具";
+  document.querySelectorAll("[data-sidebar-content]").forEach((section) => {
+    section.classList.toggle("hidden", !section.dataset.sidebarContent.split(" ").includes(selected));
+  });
+  document.querySelectorAll("[data-sidebar-panel]").forEach((button) => {
+    const expanded = button.dataset.sidebarPanel === selected;
+    button.classList.toggle("panel-active", expanded);
+    button.classList.toggle("active", expanded || button.dataset.mode === state.mode);
+    button.setAttribute("aria-expanded", String(expanded));
+  });
+  if (persist) localStorage.setItem("paperBridge.sidebarPanel", selected);
+  if (selected === "comments") void reviewCenter?.load();
+  fitAllSegmentRows();
+  schedulePdfPanelResize(anchor);
+  if (state.previewMode === "markdown") requestAnimationFrame(syncMarkdownPreviewToSource);
+}
+
+function setBilingualLayout(layout, { persist = true } = {}) {
+  state.bilingualLayout = layout === "vertical" ? "vertical" : "horizontal";
+  elements.workspace.dataset.bilingualLayout = state.bilingualLayout;
+  document.querySelectorAll('input[name="bilingualLayout"]').forEach((input) => {
+    input.checked = input.value === state.bilingualLayout;
+  });
+  const label = state.bilingualLayout === "vertical" ? "上下预览" : "左右对比";
+  document.querySelector("#bilingualLayoutLabel").textContent = label;
+  if (persist) localStorage.setItem("paperBridge.bilingualLayout", state.bilingualLayout);
+  fitAllSegmentRows();
+  refreshIcons();
+}
+
+function applySidebarWidth(persist = true) {
+  document.documentElement.style.setProperty("--sidebar-width", `${state.sidebarWidth}px`);
+  elements.sidebarResizeHandle.setAttribute("aria-valuenow", String(state.sidebarWidth));
+  if (persist) localStorage.setItem("paperBridge.sidebarWidth", String(state.sidebarWidth));
+  fitAllSegmentRows();
+  schedulePdfPanelResize();
+}
+
+function resizeSidebar(clientX) {
+  const bounds = elements.sidebar.getBoundingClientRect();
+  const maximum = Math.min(480, window.innerWidth - bounds.left - 24);
+  state.sidebarWidth = Math.round(Math.min(maximum, Math.max(120, clientX - bounds.left)));
+  applySidebarWidth(false);
 }
 
 function setBilingualSplit(clientX) {
@@ -412,15 +484,15 @@ function applyWorkspaceSplit(persist = true) {
 
 function setWorkspaceSplit(clientX) {
   const workspaceBounds = elements.workspace.getBoundingClientRect();
-  const sidebarBounds = elements.sidebar.getBoundingClientRect();
+  const editorBounds = (state.mode === "source" ? elements.sourceView : elements.editView).getBoundingClientRect();
   const dividerWidth = elements.workspaceSplitHandle.offsetWidth || 12;
-  const availableWidth = Math.max(1, workspaceBounds.right - sidebarBounds.right - dividerWidth);
+  const availableWidth = Math.max(1, workspaceBounds.right - editorBounds.left - dividerWidth);
   const compact = window.innerWidth <= 1220;
   const minimumEditor = compact ? 360 : 400;
   const minimumPreview = compact ? 320 : 340;
   const lower = Math.max(32, minimumEditor / availableWidth * 100);
   const upper = Math.min(72, 100 - minimumPreview / availableWidth * 100);
-  const requested = (clientX - sidebarBounds.right - dividerWidth / 2) / availableWidth * 100;
+  const requested = (clientX - editorBounds.left - dividerWidth / 2) / availableWidth * 100;
   state.workspaceSplit = Math.round(Math.min(Math.max(lower, requested), Math.max(lower, upper)) * 10) / 10;
   applyWorkspaceSplit(false);
 }
@@ -516,14 +588,50 @@ function projectGitServiceText(project) {
   return services.length ? services.join(" + ") : "未连接 Git";
 }
 
+function projectIdentityMatches(item, config) {
+  return String(item.projectRoot || "").toLowerCase() === String(config.projectRoot || "").toLowerCase()
+    && String(item.mainTex || "").toLowerCase() === String(config.mainTex || "").toLowerCase();
+}
+
+function projectDisplayTitle(config) {
+  const name = config.projectName || config.projectRoot?.split(/[\\/]/).filter(Boolean).at(-1) || "论文项目";
+  const duplicates = (config.recentProjects || []).filter((item) => (
+    !projectIdentityMatches(item, config) && item.name?.toLowerCase() === name.toLowerCase()
+  ));
+  if (!config.projectRoot || !duplicates.length) return name;
+  const folderTail = (folder) => folder.split(/[\\/]/).filter(Boolean).slice(-2).join("/");
+  const directory = config.projectRoot.toLowerCase();
+  const shortened = folderTail(config.projectRoot);
+  const sameFolder = duplicates.some((item) => item.projectRoot.toLowerCase() === directory);
+  const similarFolder = duplicates.some((item) => item.projectRoot.toLowerCase() !== directory
+    && folderTail(item.projectRoot).toLowerCase() === shortened.toLowerCase());
+  return [name, similarFolder ? config.projectRoot : shortened, sameFolder ? config.mainTex : ""].filter(Boolean).join(" · ");
+}
+
+function projectFolderActionLabel() {
+  return window.paperBridgeDesktop?.openProjectFolder ? "打开项目文件夹" : "复制项目路径";
+}
+
+async function openProjectFolder(projectRoot) {
+  if (!projectRoot) return;
+  try {
+    if (window.paperBridgeDesktop?.openProjectFolder) {
+      await window.paperBridgeDesktop.openProjectFolder(projectRoot);
+      return;
+    }
+    await navigator.clipboard.writeText(projectRoot);
+    toast("已复制项目路径。");
+  } catch (error) {
+    toast(error.message, "error", 5200);
+  }
+}
+
 function renderRecentProjects(project) {
   const section = document.querySelector("#recentProjectsSection");
   const list = elements.recentProjectList;
   const projects = project.config?.recentProjects || [];
   section.classList.toggle("hidden", projects.length === 0);
   list.replaceChildren();
-  const currentRoot = String(project.config?.projectRoot || "").toLowerCase();
-  const currentMainTex = String(project.config?.mainTex || "").toLowerCase();
   for (const item of projects) {
     const button = document.createElement("button");
     button.type = "button";
@@ -536,8 +644,8 @@ function renderRecentProjects(project) {
       </div>
       <div class="recent-project-meta"></div>
     `;
-    const isCurrent = currentRoot === String(item.projectRoot || "").toLowerCase()
-      && currentMainTex === String(item.mainTex || "").toLowerCase();
+    const isCurrent = projectIdentityMatches(item, project.config || {});
+    button.title = item.projectRoot;
     button.querySelector(".recent-project-main").textContent = `${item.name || "论文项目"} · ${item.mainTex}`;
     button.querySelector(".recent-project-path").textContent = item.projectRoot;
     button.querySelector(".recent-project-meta").textContent = [
@@ -562,12 +670,7 @@ function renderSidebarProjectList(project = state.project) {
     list.append(empty);
     return;
   }
-  const currentRoot = String(config.projectRoot || "").toLowerCase();
-  const currentMainTex = String(config.mainTex || "").toLowerCase();
-  const recentCurrent = projects.find((item) => (
-    currentRoot === String(item.projectRoot || "").toLowerCase()
-    && currentMainTex === String(item.mainTex || "").toLowerCase()
-  ));
+  const recentCurrent = projects.find((item) => projectIdentityMatches(item, config));
   const current = {
     ...(recentCurrent || {}),
     name: config.projectName || recentCurrent?.name || fileLabel(config.projectRoot || "论文项目"),
@@ -590,7 +693,7 @@ function renderSidebarProjectList(project = state.project) {
       <span class="project-connection-state"><span class="status-dot"></span><span></span></span>
     </span>
   `;
-  button.querySelector(".project-switch-name").textContent = current.name;
+  button.querySelector(".project-switch-name").textContent = projectDisplayTitle(config);
   button.querySelector(".project-git-services").textContent = projectGitServiceText(project);
   button.querySelector(".project-connection-state span:last-child").textContent = project.git?.remoteName ? "已连接" : "未连接远端";
   manageButton.type = "button";
@@ -609,25 +712,27 @@ function renderProjectSwitcherMenu(project = state.project) {
   const list = elements.projectSwitcherList;
   if (!list || !project) return;
   const config = project.config || {};
-  const currentRoot = String(config.projectRoot || "").toLowerCase();
-  const currentMainTex = String(config.mainTex || "").toLowerCase();
-  const projects = (config.recentProjects || []).filter((item) => !(
-    currentRoot === String(item.projectRoot || "").toLowerCase()
-    && currentMainTex === String(item.mainTex || "").toLowerCase()
-  ));
+  const recent = config.recentProjects || [];
+  const current = recent.find((item) => projectIdentityMatches(item, config))
+    || (config.projectRoot && config.mainTex ? { projectRoot: config.projectRoot, mainTex: config.mainTex, name: config.projectName, git: project.git } : null);
+  const projects = current ? [current, ...recent.filter((item) => !projectIdentityMatches(item, config))] : recent;
   list.replaceChildren();
   if (!projects.length) {
     const empty = document.createElement("div");
     empty.className = "project-switcher-empty";
-    empty.innerHTML = '<i data-lucide="folder-clock"></i><span>还没有其他最近项目</span>';
+    empty.innerHTML = '<i data-lucide="folder-clock"></i><span>还没有最近项目</span>';
     list.append(empty);
     return;
   }
   for (const item of projects) {
+    const isCurrent = item === current;
+    const row = document.createElement("div");
+    row.className = "project-switcher-row";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "project-switcher-item";
     button.title = item.projectRoot || "";
+    if (isCurrent) button.setAttribute("aria-current", "true");
     button.innerHTML = `
       <i data-lucide="folder"></i>
       <span class="project-switcher-item-copy">
@@ -635,19 +740,28 @@ function renderProjectSwitcherMenu(project = state.project) {
         <span class="project-switcher-item-path"></span>
         <span class="project-switcher-item-meta"></span>
       </span>
-      <i data-lucide="arrow-right"></i>
     `;
-    button.querySelector("strong").textContent = item.name || fileLabel(item.projectRoot || "论文项目");
-    button.querySelector(".project-switcher-item-path").textContent = item.mainTex || item.projectRoot || "";
+    button.querySelector("strong").textContent = item.name || projectDisplayTitle({ projectRoot: item.projectRoot });
+    button.querySelector(".project-switcher-item-path").textContent = item.projectRoot;
     button.querySelector(".project-switcher-item-meta").textContent = [
+      isCurrent ? "当前项目" : "",
+      item.mainTex,
       projectGitServiceText(item),
-      recentProjectTimeLabel(item.updatedAt)
+      isCurrent ? "" : recentProjectTimeLabel(item.updatedAt)
     ].filter(Boolean).join(" · ");
     button.addEventListener("click", () => {
       elements.projectSwitcherPopover?.hidePopover?.();
-      void openRecentProject(item, button);
+      if (!isCurrent) void openRecentProject(item, button);
     });
-    list.append(button);
+    const folder = document.createElement("button");
+    folder.type = "button";
+    folder.className = "icon-button project-folder-action";
+    folder.title = projectFolderActionLabel();
+    folder.setAttribute("aria-label", folder.title);
+    folder.innerHTML = '<i data-lucide="folder-open"></i>';
+    folder.addEventListener("click", () => void openProjectFolder(item.projectRoot));
+    row.append(button, folder);
+    list.append(row);
   }
   refreshIcons();
 }
@@ -1072,7 +1186,7 @@ function openSetup(project, { switching = false } = {}) {
     || project.config?.suggestedStorageRoot
     || "";
   document.querySelector("#setupProjectUrl").value = "";
-  document.querySelector("#setupProjectName").value = switching ? (project.config?.projectName || "") : "";
+  document.querySelector("#setupProjectName").value = "";
   document.querySelector("#setupGitUrl").value = "";
   document.querySelector("#setupZipPath").value = "";
   document.querySelector("#setupLocalPath").value = "";
@@ -1087,9 +1201,6 @@ function openSetup(project, { switching = false } = {}) {
     gitToken.value = "";
     gitToken.placeholder = project.config?.hasGitToken ? "已保存，留空继续使用" : "公开仓库可以留空";
   }
-  const setupAutoCompile = document.querySelector("#setupAutoCompile");
-  setupAutoCompile.checked = project.config?.autoCompile === true;
-  setupAutoCompile.closest("label")?.classList.add("hidden");
   renderRecentProjects(project);
   setSetupMessage();
   const compiler = project.dependencies?.compiler;
@@ -1235,11 +1346,10 @@ async function submitSetup(event) {
     }
     updateProjectHeader();
     renderDocumentList();
-    setPreviewMode("fast");
-    scheduleFastPreview(state.project.documents[0]?.file || state.project.config?.mainTex || "", 0);
     updateWarnings([]);
     if (state.project.documents.length) await loadDocument(state.project.documents[0].file);
-    toast("项目已打开，右侧显示快速预览。", "success");
+    await compileOpenedProject();
+    toast("项目已打开。", "success");
   } catch (error) {
     setSetupMessage(error.message, "error");
   } finally {
@@ -1248,6 +1358,7 @@ async function submitSetup(event) {
 }
 
 function resizePdfPages() {
+  elements.pdfScroll.querySelectorAll(".pdf-source-highlight").forEach((node) => node.remove());
   const scale = state.pdfZoom / 100;
   elements.pdfScroll.querySelectorAll(".pdf-page").forEach((canvas) => {
     const cssWidth = Number(canvas.dataset.baseWidth) * scale;
@@ -1455,6 +1566,7 @@ function schedulePdfPanelResize(anchor = capturePdfViewportAnchor()) {
     state.pdfResizeFrame = 0;
     const pendingAnchor = state.pendingPdfResizeAnchor;
     state.pendingPdfResizeAnchor = null;
+    if (state.mode === "edit" && state.translationExpanded) return;
     fitPdfPagesToPanel(pendingAnchor);
   });
 }
@@ -1908,7 +2020,7 @@ function highlightLocatedSegment(file, index) {
   row.classList.remove("pdf-located");
   void row.offsetWidth;
   row.classList.add("pdf-located");
-  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.scrollIntoView({ behavior: "smooth", block: "start" });
   window.setTimeout(() => row.classList.remove("pdf-located"), 2200);
   return true;
 }
@@ -1920,93 +2032,144 @@ function highlightLocatedMathBlock(file, id) {
   row.classList.remove("pdf-located");
   void row.offsetWidth;
   row.classList.add("pdf-located");
-  row.scrollIntoView({ behavior: "smooth", block: "center" });
-  row.querySelector(".math-source-editor")?.focus();
+  row.querySelector(".math-source-editor")?.focus({ preventScroll: true });
+  row.scrollIntoView({ behavior: "smooth", block: "start" });
   window.setTimeout(() => row.classList.remove("pdf-located"), 2200);
   return true;
 }
 
 async function locatePdfSelection(event) {
   if (state.compileInFlight || state.buildPreviewAvailable === false) {
-    elements.buildDrawer.classList.remove("hidden");
-    toast(
-      state.compileInFlight
-        ? "新的 PDF 仍在编译，暂时不能定位。"
-        : "本次编译失败，旧 PDF 已停用。请使用编译错误中的源码位置。",
-      "error",
-      4200
-    );
+    toast("请等待编译成功后再定位。", "info", 3200);
     return;
   }
-  if (state.pdfNavigationBusy) {
-    elements.pdfScroll.dataset.navigationState = "busy";
-    return;
-  }
-  const query = extractPdfNavigationQuery(event);
-  if (!query?.context) {
-    elements.pdfScroll.dataset.navigationState = "no-query";
-    return;
-  }
-  elements.pdfScroll.dataset.navigationState = "matching";
+  // Panning captures the pointer on the scroll container, which can also become the double-click target.
+  const shell = event.target.closest(".pdf-page-shell")
+    || document.elementFromPoint(event.clientX, event.clientY)?.closest(".pdf-page-shell");
+  const canvas = shell?.querySelector(".pdf-page");
+  if (!canvas || !state.pdfDocument || state.pdfNavigationBusy) return;
   state.pdfNavigationBusy = true;
-  elements.pdfScroll.classList.add("locating");
+  elements.pdfScroll.dataset.navigationState = "matching";
   try {
-    const navigationScope = {
-      page: query.page,
-      pageCount: query.pageCount,
-      pageText: query.pageText
-    };
-    const caption = findBestNavigationMatch(query.context, query.selectedText, await getPdfCaptionIndex(), {
-      ...navigationScope,
-      source: true,
-      caption: true
+    const pageNumber = Number(shell.dataset.page);
+    const page = await state.pdfDocument.getPage(pageNumber);
+    const bounds = canvas.getBoundingClientRect();
+    const viewport = page.getViewport({ scale: bounds.width / page.getViewport({ scale: 1 }).width });
+    const point = viewport.convertToPdfPoint(event.clientX - bounds.left, event.clientY - bounds.top);
+    const location = await api("/api/synctex/inverse", {
+      method: "POST",
+      body: JSON.stringify({ page: pageNumber, x: point[0] - page.view[0], y: page.view[3] - point[1] })
     });
-    if (caption && await openSourceLocation(caption.file, caption.line)) {
-      elements.pdfScroll.dataset.navigationState = "caption";
-      toast(`已定位到${caption.env?.startsWith("table") ? "表格" : "图片"} caption 源码。`, "success", 3200);
+    if (state.sourceDirty && state.sourceFile === location.file) {
+      toast("源码有未保存修改，请先点击“编译”更新定位信息。", "info", 4200);
       return;
     }
-
-    const paragraph = findBestNavigationMatch(query.context, query.selectedText, await getPdfParagraphIndex(), navigationScope);
-    if (paragraph) {
-      if (state.mode !== "edit" && !setMode("edit", { loadCurrent: false })) return;
-      if (state.currentDocument?.file !== paragraph.file) await loadDocument(paragraph.file);
-      if (highlightLocatedSegment(paragraph.file, paragraph.index)) {
-        elements.pdfScroll.dataset.navigationState = "paragraph";
-        toast("已定位到对应的中英文段落。", "success", 2600);
-        return;
-      }
+    const found = state.mode === "edit"
+      ? await locateTranslationSource(location.file, location.line)
+      : await openSourceLocation(location.file, location.line);
+    if (found) {
+      elements.pdfScroll.dataset.navigationState = "synctex";
     }
-
-    const source = findBestNavigationMatch(query.context, query.selectedText, await getPdfSourceIndex(), { ...navigationScope, source: true });
-    if (source) {
-      const queryTokens = navigationTokens(query.context);
-      const selectedNormalized = normalizePdfNavigationText(query.selectedText);
-      let targetLine = source.line;
-      let bestLineScore = -1;
-      for (const item of source.sourceLines) {
-        const lineCandidate = navigationTokens(item.text, { latex: true });
-        const metrics = scoreNavigationText(queryTokens, lineCandidate, selectedNormalized);
-        if (metrics.score > bestLineScore) {
-          bestLineScore = metrics.score;
-          targetLine = item.line;
-        }
-      }
-      if (await openSourceLocation(source.file, targetLine)) {
-        elements.pdfScroll.dataset.navigationState = "source";
-        toast("未找到对应翻译段落，已定位到 TeX 源码。", "success", 3600);
-        return;
-      }
-    }
-    elements.pdfScroll.dataset.navigationState = "not-found";
-    toast("没有找到可靠的对应段落或 TeX 位置。", "error", 4200);
   } catch (error) {
     elements.pdfScroll.dataset.navigationState = "error";
-    toast(`PDF 定位失败：${error.message}`, "error", 5200);
+    toast(error.message, "info", 4200);
   } finally {
     state.pdfNavigationBusy = false;
-    elements.pdfScroll.classList.remove("locating");
   }
+}
+
+async function locateSourceSelection() {
+  if (!/\.tex$/i.test(state.sourceFile || "") || !state.pdfDocument || state.pdfNavigationBusy) return;
+  if (state.compileInFlight || state.buildPreviewAvailable === false || state.sourceDirty) {
+    toast("请先点击“编译”，再定位到最新 PDF。", "info", 3600);
+    return;
+  }
+  state.pdfNavigationBusy = true;
+  try {
+    const position = sourceCursorPosition();
+    const location = await api("/api/synctex/forward", {
+      method: "POST",
+      body: JSON.stringify({ file: state.sourceFile, line: position.line, column: position.column })
+    });
+    setSourceFocus(false);
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    await highlightSyncTeXPdf(location);
+    elements.sourceEditor.dataset.navigationState = "synctex";
+  } catch (error) {
+    elements.sourceEditor.dataset.navigationState = "error";
+    toast(error.message, "info", 4200);
+  } finally {
+    state.pdfNavigationBusy = false;
+  }
+}
+
+async function highlightSyncTeXPdf(location) {
+  const shell = elements.pdfScroll.querySelector('.pdf-page-shell[data-page="' + location.page + '"]');
+  const canvas = shell?.querySelector(".pdf-page");
+  if (!canvas) return;
+  const page = await state.pdfDocument.getPage(location.page);
+  const bounds = canvas.getBoundingClientRect();
+  const viewport = page.getViewport({ scale: bounds.width / page.getViewport({ scale: 1 }).width });
+  const rect = [
+    ...viewport.convertToViewportPoint(page.view[0] + location.x, page.view[3] - location.y - location.height),
+    ...viewport.convertToViewportPoint(page.view[0] + location.x + location.width, page.view[3] - location.y)
+  ];
+  const left = Math.min(rect[0], rect[2]);
+  const top = Math.min(rect[1], rect[3]);
+  elements.pdfScroll.querySelectorAll(".pdf-source-highlight").forEach((node) => node.remove());
+  const marker = document.createElement("div");
+  marker.className = "pdf-source-highlight";
+  marker.style.left = left + "px";
+  marker.style.top = top + "px";
+  marker.style.width = Math.max(4, Math.abs(rect[2] - rect[0])) + "px";
+  marker.style.height = Math.max(4, Math.abs(rect[3] - rect[1])) + "px";
+  shell.append(marker);
+  const scrollBounds = elements.pdfScroll.getBoundingClientRect();
+  const pageBounds = shell.getBoundingClientRect();
+  const pageTop = elements.pdfScroll.scrollTop + pageBounds.top - scrollBounds.top;
+  elements.pdfScroll.scrollTop = Math.max(pageTop - 8, pageTop + top - elements.pdfScroll.clientHeight * 0.28);
+  elements.pdfScroll.scrollLeft += pageBounds.left - scrollBounds.left + left - elements.pdfScroll.clientWidth * 0.2;
+  elements.pdfScroll.dataset.navigationState = "synctex";
+  window.setTimeout(() => marker.remove(), 2200);
+}
+
+async function locateTranslationBlock(row, { reveal = false } = {}) {
+  if (state.mode !== "edit" || state.pdfNavigationBusy) return;
+  if (!state.pdfDocument || state.compileInFlight || state.buildPreviewAvailable === false) {
+    if (reveal) toast("请先编译可用的 PDF，再进行定位。", "info");
+    return;
+  }
+  if (state.translationExpanded) {
+    if (!reveal) return;
+    setTranslationExpanded(false);
+    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+  }
+  if (!row.dataset.file || !Number(row.dataset.startLine)) return;
+  state.pdfNavigationBusy = true;
+  try {
+    const location = await api("/api/synctex/forward", {
+      method: "POST",
+      body: JSON.stringify({ file: row.dataset.file, line: Number(row.dataset.startLine), column: 0 })
+    });
+    await highlightSyncTeXPdf(location);
+  } catch (error) {
+    if (reveal || error.payload?.code === "SYNCTEX_STALE") toast(error.message, "info", 3500);
+  } finally {
+    state.pdfNavigationBusy = false;
+  }
+}
+
+async function locateTranslationSource(file, line) {
+  if (state.currentFile !== file && !await loadDocument(file)) return false;
+  const rows = [...elements.segmentList.querySelectorAll("article[data-start-line]")];
+  const distance = (row) => Math.max(Number(row.dataset.startLine) - line, line - Number(row.dataset.endLine), 0);
+  const row = rows.sort((left, right) => distance(left) - distance(right))[0];
+  if (!row || row.dataset.file !== file) return openSourceLocation(file, line);
+  elements.segmentList.querySelector(".pdf-located")?.classList.remove("pdf-located");
+  row.classList.add("pdf-located");
+  row.scrollIntoView({ block: "start", behavior: "instant" });
+  window.setTimeout(() => row.classList.remove("pdf-located"), 2200);
+  return true;
 }
 
 async function locateFastPreviewSelection(event) {
@@ -2060,7 +2223,11 @@ async function locateFastPreviewSelection(event) {
 
 async function api(url, options = {}) {
   const trackedWrite = UNDO_TRACKED_URLS.has(url) && !["GET", "HEAD"].includes(String(options.method || "GET").toUpperCase());
-  if (trackedWrite) state.pendingWrites += 1;
+  let writeSucceeded = false;
+  if (trackedWrite) {
+    state.pendingWrites += 1;
+    if (state.mode === "edit") updateHeaderSaveState("saving");
+  }
   try {
     const response = await fetch(url, {
       ...options,
@@ -2076,10 +2243,19 @@ async function api(url, options = {}) {
       error.status = response.status;
       throw error;
     }
+    if (["/api/project/open", "/api/setup"].includes(url)) {
+      state.compileOnOpenPending = true;
+      state.projectTreeInitialized = false;
+    }
+    writeSucceeded = true;
     return payload;
   } finally {
     if (trackedWrite) {
       state.pendingWrites = Math.max(0, state.pendingWrites - 1);
+      if (state.mode === "edit" && !state.pendingWrites) {
+        updateHeaderSaveState(!writeSucceeded ? "error" : state.saveTimers.size ? "dirty" : "saved");
+      }
+      if (writeSucceeded) reviewCenter?.invalidate();
       void refreshUndoStatus();
     }
   }
@@ -2169,10 +2345,9 @@ function fileLabel(file) {
 }
 
 function statusLabel(status) {
-  if (status === "synced") return "有中文";
-  if (status === "pending") return "待更新";
-  if (status === "english-changed") return "需重译";
-  return "无中文";
+  if (status === "synced") return "已翻译";
+  if (status === "pending" || status === "english-changed") return "需重译";
+  return "未翻译";
 }
 
 function updateTopbarCurrentFile(file = "") {
@@ -2197,9 +2372,13 @@ function updateHeaderSaveState(status = "saved") {
 function updateProjectHeader() {
   const config = state.project.config;
   applyUndoStatus(state.project.undo || {});
-  elements.projectName.textContent = config.projectName || fileLabel(config.projectRoot || "论文项目");
-  elements.projectName.title = config.projectRoot || "";
-  updateTopbarCurrentFile(state.sourceFile || state.currentFile || config.mainTex);
+  elements.projectName.textContent = projectDisplayTitle(config);
+  elements.projectName.title = [config.projectRoot, config.mainTex].filter(Boolean).join("\n");
+  elements.openProjectFolderButton.disabled = !config.projectRoot;
+  updateTopbarCurrentFile((state.mode === "edit" ? state.currentFile : state.sourceFile) || config.mainTex);
+  document.querySelector("#terminologyBadge").textContent = state.project.terminologyCount || 0;
+  document.querySelector("#terminologyBadge").classList.toggle("hidden", !state.project.terminologyCount);
+  updateTranslationBuildLabel();
   const git = state.project.git;
   const remotes = Array.isArray(git.remotes) ? git.remotes : [];
   state.gitRemoteName = git.remoteName || "";
@@ -2238,31 +2417,46 @@ function updateProjectHeader() {
 }
 
 async function undoLastChange() {
+  if (elements.undoButton.disabled) return false;
   if (state.sourceDirty) {
     toast("TeX 源码还有未保存修改，请先按 Ctrl+S 保存或在编辑器内撤销。", "warning", 5200);
     return false;
   }
   setBusy(elements.undoButton, true);
   try {
-    const currentFile = state.currentFile;
-    const result = await api("/api/undo", { method: "POST", body: "{}" });
+    const currentFile = state.mode === "source" ? state.sourceFile : state.currentFile;
+    const result = await api("/api/undo", {
+      method: "POST",
+      body: JSON.stringify({ refreshProject: false, file: currentFile })
+    });
     applyUndoStatus(result.history || {});
     if (!result.changed) {
       toast("没有可撤销的操作。", "warning", 2800);
       return false;
     }
-    state.currentDocument = null;
-    await applyProjectPayload(result.project, { preserveDocument: true });
-    const nextFile = result.project.documents?.some((item) => item.file === currentFile)
-      ? currentFile
-      : result.project.documents?.[0]?.file;
-    if (nextFile) await loadDocument(nextFile);
-    if (state.mode === "source") {
-      renderSourceFileOptions(state.sourceFile || nextFile);
-      if (elements.sourceFileSelect.value) await loadSourceFile(elements.sourceFileSelect.value, { force: true });
+    for (const file of result.changedFiles || []) state.sourceSearchContents.delete(file);
+    if (result.document) {
+      state.currentDocument = result.document;
+      state.currentFile = result.document.file;
+      if (state.mode === "edit") renderSegments();
     }
+    if (result.source && result.source.file === state.sourceFile && !state.sourceDirty) {
+      const editor = elements.sourceEditor;
+      const { selectionStart, selectionEnd, scrollTop, scrollLeft } = editor;
+      state.sourceHash = result.source.sourceHash;
+      state.sourceEol = result.source.eol || "\n";
+      editor.value = result.source.content;
+      state.sourceSavedContent = editor.value;
+      editor.setSelectionRange(selectionStart, selectionEnd);
+      editor.scrollTop = scrollTop;
+      editor.scrollLeft = scrollLeft;
+      setSourceDirty(false);
+      scheduleSourceEditorRefresh();
+    }
+    if (result.filesChanged) await refreshProject({ preserveDocument: false });
+    invalidatePdfNavigationIndex();
     invalidateReferences();
-    scheduleFastPreview(nextFile || result.project.config?.mainTex || "", 0);
+    reviewCenter?.invalidate();
     toast(`已撤销：${result.label || "上一步操作"}。`, "success", 3600);
     return true;
   } catch (error) {
@@ -2275,17 +2469,8 @@ async function undoLastChange() {
 }
 
 function shouldUseNativeTextUndo(target) {
-  const editable = target?.closest("textarea, input, select, [contenteditable='true']");
-  if (!editable) return false;
-  if (editable === elements.sourceEditor) return state.sourceDirty;
-  if (editable.matches(".segment-textarea, .math-source-editor")) {
-    return editable.classList.contains("changed");
-  }
-  const tableRow = editable.closest(".table-row");
-  if (tableRow && editable.closest(".table-editor")) {
-    return tableRow.querySelector(".segment-status")?.classList.contains("english-changed") === true;
-  }
-  return true;
+  // Autosave must not switch an editor's Ctrl+Z to project-wide file restoration.
+  return Boolean(target?.closest("textarea, input, select, [contenteditable='true']"));
 }
 
 async function waitForPendingSaves(timeoutMs = 70_000) {
@@ -2340,7 +2525,9 @@ function updateTranslationProgress() {
   const total = documents.reduce((sum, item) => sum + item.segments, 0);
   const translated = documents.reduce((sum, item) => sum + item.translated, 0);
   const percent = total ? Math.round((translated / total) * 100) : 0;
-  elements.translationProgress.textContent = `${percent}%`;
+  elements.translationProgressCount.textContent = `已翻译 ${translated}/${total} 段 · `;
+  elements.translationProgressPercent.textContent = `${percent}%`;
+  elements.translationProgress.title = elements.translationProgress.textContent;
   elements.translationProgressBar.style.width = `${percent}%`;
 }
 
@@ -2362,13 +2549,7 @@ function hideFileTranslationProgress() {
 }
 
 function updateTranslateFileButton() {
-  const button = document.querySelector("#translateFileButton");
-  if (!button) return;
-  const job = state.currentFile ? state.fileTranslationJobs.get(state.currentFile) : null;
-  const label = button.querySelector("span");
-  button.disabled = !state.currentFile || !state.currentDocument;
-  button.classList.toggle("busy", Boolean(job));
-  if (label) label.textContent = job ? "当前 TeX 翻译中" : "翻译当前 TeX";
+  updateTranslationDirection();
 }
 
 function renderFileTranslationProgress(preferredFile = state.visibleTranslationJobFile || state.currentFile) {
@@ -2436,6 +2617,9 @@ function setTerminologyDirty(dirty = true) {
 
 function updateTerminologyMeta(payload = null) {
   const count = state.terminologyEntries.length;
+  document.querySelector("#terminologyBadge").textContent = String(count);
+  document.querySelector("#terminologyBadge").classList.toggle("hidden", !count);
+  if (state.project) state.project.terminologyCount = count;
   const file = state.terminologyFile || state.currentFile;
   const scope = payload?.scope === "project" ? "全文术语表" : file ? fileLabel(file) : "全文术语表";
   const source = payload?.manual ? "手动维护" : payload?.ruleBased ? "规则提取" : payload?.cached ? "已缓存" : "全文";
@@ -2674,7 +2858,6 @@ async function applyTerminologyDefinitions() {
       state.currentDocument = result.document;
       renderSegments();
     }
-    if (result.document?.file) scheduleFastPreview(result.document.file, 0);
     const applied = result.applied?.length || 0;
     const skipped = result.skipped?.length || 0;
     setTerminologyStatus(`已写入 ${applied} 个缩写${skipped ? `，跳过 ${skipped} 个` : ""}`, "saved");
@@ -2687,444 +2870,94 @@ async function applyTerminologyDefinitions() {
   }
 }
 
+
+function referenceProjectKey() {
+  return state.project?.config?.projectRoot || "";
+}
+
 function invalidateReferences() {
-  state.references = null;
-  state.selectedReferenceKey = "";
+  referenceWorkbench?.invalidate();
 }
 
-function normalizeReferenceEntry(entry = {}) {
-  return {
-    ...entry,
-    key: String(entry.key || ""),
-    type: String(entry.type || ""),
-    file: String(entry.file || ""),
-    title: String(entry.title || ""),
-    author: String(entry.author || ""),
-    year: String(entry.year || ""),
-    venue: String(entry.venue || ""),
-    methodKeyword: String(entry.methodKeyword || ""),
-    raw: String(entry.raw || ""),
-    fields: entry.fields && typeof entry.fields === "object" ? entry.fields : {},
-    citationOrder: Number(entry.citationOrder || 0),
-    firstCitation: entry.firstCitation || null
-  };
+function loadReferences(options) {
+  return referenceWorkbench?.load(options);
 }
 
-function referenceVenue(entry) {
-  return entry.venue || entry.fields?.booktitle || entry.fields?.journal || entry.fields?.publisher || "";
-}
-
-function referenceTitle(entry) {
-  return entry.title || entry.key || "Untitled reference";
-}
-
-function referenceSearchText(entry) {
-  return [
-    entry.key,
-    entry.methodKeyword,
-    entry.year,
-    referenceTitle(entry),
-    entry.author,
-    referenceVenue(entry),
-    ...Object.values(entry.fields || {})
-  ].join("\n").toLowerCase();
-}
-
-function referenceMatchesSearch(entry, query) {
-  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return true;
-  const haystack = referenceSearchText(entry);
-  return terms.every((term) => haystack.includes(term));
-}
-
-function getVisibleReferences(query = elements.referencesSearch?.value || "") {
-  return (state.references?.entries || [])
-    .map(normalizeReferenceEntry)
-    .filter((entry) => referenceMatchesSearch(entry, query));
-}
-
-function selectedReference() {
-  const key = state.selectedReferenceKey;
-  return (state.references?.entries || []).map(normalizeReferenceEntry).find((entry) => entry.key === key) || null;
-}
-
-function referenceFieldLabel(name) {
-  const labels = state.references?.fieldLabels || {};
-  return labels[name] || name;
-}
-
-function referenceMetaText(entry) {
-  const parts = [];
-  if (entry.methodKeyword) parts.push(entry.methodKeyword);
-  if (entry.year) parts.push(entry.year);
-  if (referenceVenue(entry)) parts.push(referenceVenue(entry));
-  return parts.join(" · ") || "未识别方法关键词 / 年份 / venue";
-}
-
-function renderReferencesAlerts() {
-  if (!elements.referencesAlerts) return;
-  elements.referencesAlerts.replaceChildren();
-  const payload = state.references;
-  if (!payload) return;
-  const alerts = [];
-  if (!payload.bibliographyFiles?.length) {
-    alerts.push({ tone: "warning", text: "当前项目还没有检测到 .bib 文件。可以先用“参考文献转 Bib”功能生成独立 Bib 文件。" });
+async function prepareReferenceWrite() {
+  const start = Date.now();
+  while (state.sourceSaveInFlight || state.pendingWrites || state.saveTimers.size) {
+    if (Date.now() - start > 6500) throw new Error("编辑区有保存任务正在进行，请稍后重试。");
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
   }
-  if (payload.missing?.length) {
-    const sample = payload.missing.slice(0, 5).map((item) => `${item.key}（${item.file}:${item.line}）`).join("，");
-    alerts.push({ tone: "error", text: `正文中有 ${payload.missing.length} 个 citation key 找不到 BibTeX：${sample}${payload.missing.length > 5 ? "…" : ""}` });
-  }
-  if (payload.unused?.length) {
-    const sample = payload.unused.slice(0, 5).join("，");
-    alerts.push({ tone: "muted", text: `Bib 文件中有 ${payload.unused.length} 篇暂未被正文引用：${sample}${payload.unused.length > 5 ? "…" : ""}` });
-  }
-  if (payload.duplicates?.length) {
-    const sample = payload.duplicates.slice(0, 3).map((group) => group.join(" / ")).join("；");
-    alerts.push({ tone: "warning", text: `检测到 ${payload.duplicates.length} 组疑似重复文献：${sample}${payload.duplicates.length > 3 ? "…" : ""}` });
-  }
-  for (const alert of alerts) {
-    const node = document.createElement("div");
-    node.className = `references-alert ${alert.tone}`;
-    node.textContent = alert.text;
-    elements.referencesAlerts.append(node);
+  if (state.sourceDirty && !await saveSourceFile({ quiet: true, refreshPreview: false })) {
+    throw new Error("请先保存当前源码，再修改参考文献。");
   }
 }
 
-function renderReferenceRow(entry, { compact = false } = {}) {
-  const row = document.createElement(compact ? "button" : "article");
-  row.className = `reference-row${compact ? " compact" : ""}`;
-  row.dataset.referenceKey = entry.key;
-  if (compact) row.type = "button";
-  else {
-    row.tabIndex = 0;
-    row.draggable = true;
+async function applyReferenceWrite(result) {
+  if (result.project) {
+    state.project = result.project;
+    updateProjectHeader();
+    renderDocumentList();
+    renderSourceFileOptions(state.sourceFile);
   }
-  row.classList.toggle("active", entry.key === state.selectedReferenceKey);
-
-  const order = document.createElement("span");
-  order.className = `reference-order${entry.citationOrder ? "" : " uncited"}`;
-  order.textContent = entry.citationOrder ? `#${entry.citationOrder}` : "未引";
-
-  const body = document.createElement("div");
-  body.className = "reference-row-body";
-
-  const title = document.createElement("div");
-  title.className = "reference-row-title";
-  title.textContent = referenceTitle(entry);
-
-  const meta = document.createElement("div");
-  meta.className = "reference-row-meta";
-  meta.textContent = `${referenceMetaText(entry)} · ${entry.key}`;
-
-  body.append(title, meta);
-  row.append(order, body);
-
-  if (!compact) {
-    const insert = document.createElement("button");
-    insert.className = "mini-button reference-insert-button";
-    insert.type = "button";
-    insert.title = "点击插入；也可以拖到中英文中的指定位置";
-    insert.innerHTML = '<i data-lucide="quote"></i>';
-    insert.addEventListener("click", (event) => {
-      event.stopPropagation();
-      insertCitationAtCurrentTarget(entry);
-    });
-    row.append(insert);
-  }
-
-  const activate = () => {
-    state.selectedReferenceKey = entry.key;
-    renderReferenceList();
-    renderReferenceDetail(entry);
-  };
-  row.addEventListener("click", () => {
-    if (compact) {
-      state.selectedReferenceKey = entry.key;
-      insertCitationAtCurrentTarget(entry);
-      closeReferenceInsertDialog();
-      return;
+  const files = result.changedFiles || (result.file ? [result.file, state.project?.config?.mainTex] : []);
+  for (const file of files) state.sourceSearchContents.delete(file);
+  if (files.includes(state.sourceFile)) {
+    const caret = [elements.sourceEditor.selectionStart, elements.sourceEditor.selectionEnd, elements.sourceEditor.selectionDirection];
+    const scrollTop = elements.sourceEditor.scrollTop;
+    if (await refreshLoadedSourceFromDisk(state.sourceFile)) {
+      elements.sourceEditor.setSelectionRange(...caret);
+      elements.sourceEditor.scrollTop = scrollTop;
+      syncSourceEditorLayers();
     }
-    activate();
+  }
+  if (state.mode === "edit" && result.changedFiles?.includes(state.currentFile) && /\.tex$/i.test(state.currentFile || "")) {
+    const target = state.citationTarget;
+    const original = target?.element.closest(".segment-row");
+    const selector = target?.element.matches(".segment-reading") ? ".segment-reading" : "textarea.segment-textarea";
+    const language = target?.element.classList.contains("english") ? "english" : "chinese";
+    await loadDocument(state.currentFile);
+    if (original && target === state.citationTarget && !target.element.isConnected) {
+      const row = [...elements.segmentList.querySelectorAll(".segment-row")].find((candidate) =>
+        candidate.dataset.file === original.dataset.file && candidate.dataset.startLine === original.dataset.startLine
+      );
+      const editor = row?.querySelector(selector + "." + language);
+      if (editor?.value === target.element.value) state.citationTarget = { ...target, element: editor };
+    }
+  }
+  if (files.length) invalidatePdfNavigationIndex();
+}
+
+function isCitationEditor(textarea) {
+  if (!textarea?.isConnected) return false;
+  if (textarea === elements.sourceEditor) return state.mode === "source" && /\.tex$/i.test(state.sourceFile || "");
+  return state.mode === "edit" && textarea.matches("textarea.segment-textarea, .segment-reading");
+}
+
+function bindReferences() {
+  referenceWorkbench = mountReferenceWorkbench({
+    api, project: referenceProjectKey,
+    bibTargets: () => (state.project?.projectFiles || []).filter((item) => item.extension === ".bib").map((item) => item.path),
+    showWorkbench: () => { if (!state.referencesOpen) setReferencesOpen(true); },
+    insert: insertCitationAtCurrentTarget,
+    hasCitationTarget: () => Boolean(citationTargetElement()),
+    gotoCitation: ({ file, line, paragraph }) => state.mode === "edit" && paragraph ? locateTranslationSource(file, line) : openSourceLocation(file, line, { keepReferences: true }),
+    gotoSource: ({ file, startLine }) => openSourceLocation(file, startLine, { keepReferences: true }),
+    beforeWrite: prepareReferenceWrite,
+    afterWrite: applyReferenceWrite,
+    notify: toast, icons: refreshIcons, dragType: CITATION_DRAG_TYPE
   });
-  if (!compact) row.addEventListener("dblclick", () => insertCitationAtCurrentTarget(entry));
-  if (!compact) {
-    row.addEventListener("dragstart", (event) => {
-      state.selectedReferenceKey = entry.key;
-      elements.referencesList.querySelectorAll(".reference-row").forEach((item) => {
-        item.classList.toggle("active", item.dataset.referenceKey === entry.key);
-      });
-      renderReferenceDetail(entry);
-      row.classList.add("dragging");
-      event.dataTransfer.effectAllowed = "copy";
-      event.dataTransfer.setData(CITATION_DRAG_TYPE, entry.key);
-      event.dataTransfer.setData("text/plain", `\\cite{${entry.key}}`);
-
-      const dragPreview = document.createElement("div");
-      dragPreview.className = "citation-drag-preview";
-      dragPreview.textContent = `“  \\cite{${entry.key}}`;
-      document.body.append(dragPreview);
-      event.dataTransfer.setDragImage(dragPreview, 18, 18);
-      window.setTimeout(() => dragPreview.remove(), 0);
-    });
-    row.addEventListener("dragend", () => {
-      row.classList.remove("dragging");
-      document.querySelectorAll(".citation-drop-target").forEach((item) => item.classList.remove("citation-drop-target"));
-    });
-    row.addEventListener("keydown", (event) => {
-      if (!["Enter", " "].includes(event.key)) return;
-      event.preventDefault();
-      activate();
-    });
-  }
-  return row;
-}
-
-function renderReferenceList() {
-  if (!elements.referencesList) return;
-  const entries = getVisibleReferences();
-  elements.referencesList.replaceChildren();
-  if (!state.references) {
-    elements.referencesList.innerHTML = '<div class="empty-state">正在读取参考文献...</div>';
-    return;
-  }
-  if (!entries.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = state.references.entries?.length ? "没有匹配的文献。" : "当前 Bib 文件里还没有可识别的文献。";
-    elements.referencesList.append(empty);
-    return;
-  }
-  if (!state.selectedReferenceKey || !entries.some((entry) => entry.key === state.selectedReferenceKey)) {
-    state.selectedReferenceKey = entries[0].key;
-  }
-  for (const entry of entries) elements.referencesList.append(renderReferenceRow(entry));
-  refreshIcons();
-}
-
-function renderReferenceInsertList() {
-  if (!elements.referenceInsertList) return;
-  const entries = getVisibleReferences(elements.referenceInsertSearch.value);
-  elements.referenceInsertList.replaceChildren();
-  if (!entries.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = state.references?.entries?.length ? "没有匹配的文献。" : "当前 Bib 文件里还没有可插入的文献。";
-    elements.referenceInsertList.append(empty);
-    return;
-  }
-  for (const entry of entries) elements.referenceInsertList.append(renderReferenceRow(entry, { compact: true }));
-  refreshIcons();
-}
-
-function renderReferenceDetail(entry = selectedReference()) {
-  if (!elements.referenceDetail) return;
-  elements.referenceDetail.replaceChildren();
-  if (!entry) {
-    elements.referenceDetail.innerHTML = '<div class="empty-state">选择一篇文献后查看 BibTeX 源码和字段解释。</div>';
-    return;
-  }
-
-  const header = document.createElement("div");
-  header.className = "reference-detail-header";
-  const title = document.createElement("h2");
-  title.textContent = referenceTitle(entry);
-  const meta = document.createElement("div");
-  meta.className = "reference-detail-meta";
-  meta.textContent = `${entry.file}${entry.startLine ? `:${entry.startLine}` : ""} · ${entry.key}`;
-  header.append(title, meta);
-
-  const summary = document.createElement("div");
-  summary.className = "reference-summary-grid";
-  for (const [label, value] of [
-    ["方法关键词", entry.methodKeyword || "未识别"],
-    ["年份", entry.year || "未填写"],
-    ["Venue", referenceVenue(entry) || "未填写"],
-    ["正文首次引用", entry.firstCitation ? `${entry.firstCitation.file}:${entry.firstCitation.line}` : "尚未引用"]
-  ]) {
-    const item = document.createElement("div");
-    const name = document.createElement("span");
-    name.textContent = label;
-    const text = document.createElement("strong");
-    text.textContent = value;
-    item.append(name, text);
-    summary.append(item);
-  }
-
-  const fields = document.createElement("dl");
-  fields.className = "reference-field-list";
-  for (const [name, value] of Object.entries(entry.fields || {})) {
-    if (!value) continue;
-    const dt = document.createElement("dt");
-    dt.textContent = `${name}：${referenceFieldLabel(name)}`;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    fields.append(dt, dd);
-  }
-
-  const sourceLabel = document.createElement("h3");
-  sourceLabel.textContent = "原始 BibTeX 源码";
-  const source = document.createElement("pre");
-  source.className = "reference-bib-source";
-  source.textContent = entry.raw;
-
-  elements.referenceDetail.append(header, summary, fields, sourceLabel, source);
-}
-
-function maybeOpenReferenceAddDialogForSearch() {
-  const query = String(elements.referencesSearch?.value || "").trim();
-  if (!query || !state.references || getVisibleReferences(query).length || elements.referenceAddDialog?.open) {
-    if (!query || getVisibleReferences(query).length) state.referenceAutoAddQuery = "";
-    return;
-  }
-  if (state.referenceAutoAddQuery === query) return;
-  state.referenceAutoAddQuery = query;
-  openReferenceAddDialog(query);
-}
-
-function renderReferences() {
-  const payload = state.references;
-  const total = payload?.entries?.length || 0;
-  const files = payload?.bibliographyFiles?.length ? payload.bibliographyFiles.map(fileLabel).join("，") : "未检测到 Bib 文件";
-  elements.referencesMeta.textContent = `${files} · ${total} 篇文献 · 按正文第一次引用排序`;
-  renderReferencesAlerts();
-  renderReferenceList();
-  renderReferenceDetail();
-  if (elements.referenceInsertDialog?.open) renderReferenceInsertList();
-}
-
-function renderReferenceAddBibFiles(files = [], selected = "") {
-  if (!elements.referenceAddBibFile) return;
-  elements.referenceAddBibFile.replaceChildren();
-  const options = files.length ? files : ["references.bib"];
-  for (const file of options) {
-    const option = document.createElement("option");
-    option.value = file;
-    option.textContent = file;
-    option.selected = file === selected || (!selected && file === options[0]);
-    elements.referenceAddBibFile.append(option);
-  }
-}
-
-function openReferenceAddDialog(initialQuery = "") {
-  if (!elements.referenceAddDialog) return;
-  elements.referenceAddForm?.reset();
-  elements.referenceAddUrl.value = String(initialQuery || "").trim();
-  elements.referenceAddBib.value = "";
-  elements.referenceAddKey.value = "";
-  elements.referenceAddStatus.textContent = "粘贴 DOI、arXiv、IEEE 或普通网页链接，然后获取元数据。";
-  renderReferenceAddBibFiles(state.references?.bibliographyFiles || []);
-  elements.referenceAddDialog.showModal();
-  window.setTimeout(() => elements.referenceAddUrl?.focus(), 0);
-}
-
-function closeReferenceAddDialog() {
-  state.referenceAutoAddQuery = "";
-  if (elements.referenceAddDialog?.open) elements.referenceAddDialog.close();
-}
-
-async function lookupNewReference() {
-  const url = elements.referenceAddUrl.value.trim();
-  if (!url) {
-    toast("请先输入 DOI、arXiv、IEEE 或普通网页链接。", "error");
-    elements.referenceAddUrl.focus();
-    return;
-  }
-  setBusy(elements.referenceLookupButton, true);
-  elements.referenceAddStatus.textContent = "正在读取论文元数据……";
-  try {
-    const result = await api("/api/references/lookup", {
-      method: "POST",
-      body: JSON.stringify({ url })
-    });
-    elements.referenceAddKey.value = result.entry.key;
-    elements.referenceAddBib.value = result.entry.raw;
-    renderReferenceAddBibFiles(result.bibFiles, result.defaultBibFile);
-    if (result.duplicate?.length) {
-      elements.referenceAddStatus.textContent = `发现可能重复文献：${result.duplicate.map((item) => item.key).join("、")}。请确认是否仍要加入。`;
-      elements.referenceAddStatus.className = "reference-add-status warning";
-    } else {
-      const kind = result.metadata?.type === "preprint" ? "arXiv 预印本"
-        : result.metadata?.type === "webpage" ? "网页"
-          : "论文";
-      const doiNote = result.metadata?.doiDiscovery === "title-match"
-        ? ` 已根据页面标题找到 DOI：${result.metadata.doi}。`
-        : result.metadata?.doiDiscovery === "page"
-          ? ` 已从页面元数据找到 DOI：${result.metadata.doi}。`
-          : "";
-      elements.referenceAddStatus.textContent = `已识别为${kind}：${result.entry.fields?.title || result.entry.key}。${doiNote}可以修改 citation key 或 BibTeX 后加入。`;
-      elements.referenceAddStatus.className = "reference-add-status";
-    }
-  } catch (error) {
-    elements.referenceAddStatus.textContent = error.message;
-    elements.referenceAddStatus.className = "reference-add-status error";
-    toast(error.message, "error", 6200);
-  } finally {
-    setBusy(elements.referenceLookupButton, false);
-  }
-}
-
-async function addNewReference() {
-  const raw = elements.referenceAddBib.value.trim();
-  if (!raw) {
-    toast("请先获取并确认 BibTeX。", "error");
-    return;
-  }
-  setBusy(elements.referenceAddSubmitButton, true);
-  elements.referenceAddStatus.textContent = "正在写入 Bib 文件……";
-  try {
-    const result = await api("/api/references/add", {
-      method: "POST",
-      body: JSON.stringify({
-        bibFile: elements.referenceAddBibFile.value,
-        raw,
-        key: elements.referenceAddKey.value.trim()
-      })
-    });
-    state.references = {
-      ...result.references,
-      entries: (result.references.entries || []).map(normalizeReferenceEntry)
-    };
-    state.selectedReferenceKey = result.entry.key;
-    renderReferences();
-    closeReferenceAddDialog();
-    toast(`已新增文献 ${result.entry.key}，写入 ${result.file}。`, "success", 5200);
-  } catch (error) {
-    elements.referenceAddStatus.textContent = error.message;
-    elements.referenceAddStatus.className = "reference-add-status error";
-    toast(error.message, "error", 6200);
-  } finally {
-    setBusy(elements.referenceAddSubmitButton, false);
-  }
-}
-
-async function loadReferences({ force = false } = {}) {
-  if (state.references && !force) {
-    renderReferences();
-    return;
-  }
-  elements.referencesMeta.textContent = "正在读取 Bib 文件和正文引用...";
-  try {
-    const payload = await api("/api/references");
-    state.references = {
-      ...payload,
-      entries: (payload.entries || []).map(normalizeReferenceEntry)
-    };
-    if (!state.selectedReferenceKey && state.references.entries.length) {
-      state.selectedReferenceKey = state.references.entries[0].key;
-    }
-    renderReferences();
-  } catch (error) {
-    elements.referencesMeta.textContent = "参考文献读取失败";
-    elements.referencesList.innerHTML = '<div class="empty-state">无法读取参考文献。</div>';
-    elements.referenceDetail.innerHTML = '<div class="empty-state">请先确认项目里有 Bib 文件，或者先完成参考文献转 Bib。</div>';
-    toast(error.message, "error", 5200);
-  }
+  citationTools = createCitationTools({
+    references: referenceWorkbench, canCite: isCitationEditor, offsetFromPoint: textareaCaretOffsetFromPoint
+  });
 }
 
 function rememberCitationTarget(textarea) {
-  if (!textarea || typeof textarea.selectionStart !== "number") return;
+  if (!isCitationEditor(textarea) || typeof textarea.selectionStart !== "number") return;
   state.citationTarget = {
     element: textarea,
+    file: textarea === elements.sourceEditor ? state.sourceFile : textarea.closest(".segment-row")?.dataset.file,
     start: textarea.selectionStart,
     end: textarea.selectionEnd
   };
@@ -3132,11 +2965,12 @@ function rememberCitationTarget(textarea) {
 
 function citationTargetElement() {
   const active = document.activeElement;
-  if (active?.matches?.("textarea.segment-textarea, textarea.source-editor")) {
+  if (isCitationEditor(active)) {
     rememberCitationTarget(active);
     return active;
   }
-  if (state.citationTarget?.element?.isConnected) return state.citationTarget.element;
+  const target = state.citationTarget;
+  if (isCitationEditor(target?.element) && (target.element !== elements.sourceEditor || target.file === state.sourceFile)) return target.element;
   return null;
 }
 
@@ -3216,7 +3050,8 @@ function textareaCaretOffsetFromPoint(textarea, clientX, clientY) {
 }
 
 function insertCitationIntoTarget(target, key, start, end = start) {
-  const insertionPoint = Math.max(start, end);
+  const insertionPoint = Math.min(target.value.length, Math.max(start, end));
+  target.activateCitationEditor?.();
   const before = target.value.slice(0, insertionPoint);
   const glue = before && !/[\s~([{]$/.test(before) ? "~" : "";
   const citation = `${glue}\\cite{${key}}`;
@@ -3245,13 +3080,12 @@ function closeReferenceInsertDialog() {
 
 async function openReferenceInsertDialog() {
   closeCitationContextMenu();
-  if (!state.references) await loadReferences();
-  if (!state.references) return;
+  if (!await loadReferences({ render: false })) return;
   elements.referenceInsertSearch.value = elements.referencesSearch?.value || "";
   elements.referenceInsertMeta.textContent = state.citationTarget?.element?.classList.contains("source-editor")
     ? "将插入到 TeX 源码当前光标处"
     : "将插入到当前段落光标处；如果选中了一个词，会插在这个词后面";
-  renderReferenceInsertList();
+  referenceWorkbench.renderInsert();
   if (!elements.referenceInsertDialog.open) elements.referenceInsertDialog.showModal();
   window.requestAnimationFrame(() => elements.referenceInsertSearch.focus());
 }
@@ -3279,8 +3113,11 @@ function openCitationContextMenu(event, textarea) {
     menu.append(button);
   };
   appendAction("quote", "插入文献", () => openReferenceInsertDialog());
-  const segmentRow = textarea.classList.contains("segment-textarea") ? textarea.closest(".segment-row") : null;
+  const segmentRow = textarea.closest(".segment-row");
   const hasSelection = textarea.selectionEnd > textarea.selectionStart;
+  if (textarea.classList.contains("source-editor") && hasSelection) {
+    appendAction("message-square-plus", "添加批注", () => reviewCenter?.newNote(reviewSelectionAt(textarea)));
+  }
   if (segmentRow?.commentParagraphAction && hasSelection) {
     appendAction("percent", "注释选中内容", (button) => segmentRow.commentParagraphAction(button));
   }
@@ -3297,6 +3134,7 @@ function openCitationContextMenu(event, textarea) {
 
 function attachCitationTarget(textarea) {
   if (!textarea) return;
+  citationTools.bindEditor(textarea);
   for (const eventName of ["focus", "click", "keyup", "select"]) {
     textarea.addEventListener(eventName, () => rememberCitationTarget(textarea));
   }
@@ -3313,7 +3151,8 @@ function attachCitationTarget(textarea) {
     if (!key) return;
     event.preventDefault();
     textarea.classList.remove("citation-drop-target");
-    const offset = textareaCaretOffsetFromPoint(textarea, event.clientX, event.clientY);
+    const offset = textarea.latexOffsetFromPoint?.(event.clientX, event.clientY)
+      ?? textareaCaretOffsetFromPoint(textarea, event.clientX, event.clientY);
     insertCitationIntoTarget(textarea, key, offset);
   });
 }
@@ -3322,15 +3161,19 @@ const PROJECT_PREVIEW_EXTENSIONS = new Set([
   ".pdf", ".png", ".jpg", ".jpeg", ".svg", ".eps", ".gif", ".webp", ".bmp", ".tif", ".tiff"
 ]);
 
-function projectFileDepth(file) {
-  return Math.max(0, String(file || "").split("/").length - 1);
-}
-
 function projectFileIcon(entry) {
   if (entry.type === "directory") return "folder";
   if (PROJECT_PREVIEW_EXTENSIONS.has(String(entry.extension || "").toLowerCase())) return "image";
   if (String(entry.extension || "").toLowerCase() === ".bib") return "book-open";
   return "file-text";
+}
+
+const AUXILIARY_FILES_GROUP = "\0auxiliary-files";
+
+function isAuxiliaryProjectFile(entry) {
+  const file = String(entry.path || "");
+  return /(?:^|[\\/])\.(?:output|tmp)(?:[\\/]|$)/i.test(file)
+    || (entry.type !== "directory" && /\.(?:aux|bbl|bcf|blg|brf|fdb_latexmk|fls|lof|lot|log|nav|out|output|run\.xml|snm|synctex(?:\.gz)?|tmp|toc|vrb|xdv|dvi|idx|ilg|ind|glg|glo|gls|acn|acr|alg|spl)$/i.test(file));
 }
 
 function showSourceEditor() {
@@ -3341,7 +3184,7 @@ function showSourceEditor() {
 async function openProjectFile(file) {
   const relative = String(file || "").replaceAll("\\", "/");
   if (!relative) return;
-  if (/\.(?:tex|bib|md|markdown)$/i.test(relative)) {
+  if (/\.(?:tex|bib|md|markdown)$/i.test(relative) && state.project?.sourceFiles?.includes(relative)) {
     showSourceEditor();
     if (state.mode !== "source" && !setMode("source", { loadCurrent: false })) return;
     renderSourceFileOptions(relative);
@@ -3373,57 +3216,100 @@ async function openProjectFile(file) {
   } else {
     const note = document.createElement("div");
     note.className = "project-file-preview-note";
-    note.textContent = "此文件没有内置预览。图片插入面板仍可直接选择项目中的资源文件。";
+    note.textContent = extension === ".bib"
+      ? "在主 TeX 中声明此 Bib 文件后，可在源码视图中编辑。"
+      : "此文件没有内置预览，可使用文件栏上方的文件夹按钮查看。";
     elements.projectFilePreviewBody.append(note);
   }
   renderSectionList();
   updateTopbarCurrentFile(relative);
+  updateModeButtons();
 }
 
 function renderDocumentList() {
   const entries = Array.isArray(state.project?.projectFiles) ? state.project.projectFiles : [];
+  const auxiliaryEntries = entries.filter((entry) => entry.type !== "directory" && isAuxiliaryProjectFile(entry));
   const documents = state.project.documents || [];
   const documentByFile = new Map(documents.map((item) => [item.file, item]));
   elements.documentCount.textContent = String(entries.length);
   elements.documentList.replaceChildren();
-  if (!entries.length) {
-    const empty = document.createElement("div");
-    empty.className = "project-file-empty";
-    empty.textContent = "项目中暂无文件";
-    elements.documentList.append(empty);
-    return;
+  if (!state.projectTreeInitialized) {
+    state.expandedProjectFolders.clear();
+    state.projectTreeInitialized = true;
   }
+  const nodes = new Map([["", { path: "", type: "directory", children: [] }]]);
+  const ensureDirectory = (directory) => {
+    if (!nodes.has(directory)) nodes.set(directory, { path: directory, type: "directory", children: [] });
+    return nodes.get(directory);
+  };
   for (const entry of entries) {
-    const file = entry.path;
-    const item = documentByFile.get(file);
-    const button = document.createElement("button");
-    button.className = `document-button ${entry.type === "directory" ? "folder" : "file"} ${file === state.currentFile || (state.mode === "source" && file === state.sourceFile) ? "active" : ""}`;
-    button.type = "button";
-    button.style.paddingLeft = `${8 + projectFileDepth(file) * 14}px`;
-    button.innerHTML = `
-      <i data-lucide="${projectFileIcon(entry)}"></i>
-      <span class="document-label"></span>
-      <span class="document-progress"></span>
-    `;
-    button.querySelector(".document-label").textContent = file;
-    button.querySelector(".document-progress").textContent = entry.type === "directory"
-      ? "文件夹"
-      : item ? `${item.translated}/${item.segments}` : (entry.extension || "文件");
-    button.title = file;
-    if (entry.type === "file") {
-      button.addEventListener("click", async () => {
-        if (item && state.mode === "edit") {
-          await loadDocument(file);
-          return;
-        }
-        await openProjectFile(file);
-        renderDocumentList();
-      });
-    } else {
-      button.disabled = true;
-    }
-    elements.documentList.append(button);
+    if (isAuxiliaryProjectFile(entry)) continue;
+    const file = String(entry.path || "").replaceAll("\\\\", "/");
+    const parts = file.split("/");
+    const parent = ensureDirectory(parts.slice(0, -1).join("/"));
+    const node = { ...entry, path: file, name: parts.at(-1), children: [] };
+    parent.children.push(node);
+    if (entry.type === "directory") ensureDirectory(file);
   }
+  for (const node of nodes.values()) {
+    node.children.sort((left, right) => {
+      if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
+    });
+  }
+  if (auxiliaryEntries.length) {
+    const auxiliaryGroup = {
+      path: AUXILIARY_FILES_GROUP,
+      type: "directory",
+      name: "辅助文件",
+      children: auxiliaryEntries.map((entry) => ({ ...entry, name: entry.path, children: [] }))
+        .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }))
+    };
+    nodes.set(AUXILIARY_FILES_GROUP, auxiliaryGroup);
+    nodes.get("").children.push(auxiliaryGroup);
+  }
+  const renderTree = (parent, depth) => {
+    for (const entry of parent.children) {
+      const file = entry.path;
+      const item = documentByFile.get(file);
+      const button = document.createElement("button");
+      const isFolder = entry.type === "directory";
+      const expanded = isFolder && state.expandedProjectFolders.has(file);
+      button.className = `document-button ${isFolder ? "folder" : "file"} ${file === state.currentFile || (state.mode === "source" && file === state.sourceFile) ? "active" : ""}`;
+      button.type = "button";
+      button.style.paddingLeft = `${8 + depth * 15}px`;
+      button.innerHTML = `
+        <i data-lucide="${isFolder ? (expanded ? "chevron-down" : "chevron-right") : projectFileIcon(entry)}"></i>
+        <span class="document-label"></span>
+        <span class="document-progress"></span>
+      `;
+      button.querySelector(".document-label").textContent = entry.name;
+      button.querySelector(".document-progress").textContent = "";
+      button.title = file === AUXILIARY_FILES_GROUP ? "辅助文件" : file || state.project?.config?.projectRoot || "";
+      if (isFolder) {
+        button.setAttribute("aria-expanded", String(expanded));
+        button.addEventListener("click", () => {
+          if (state.expandedProjectFolders.has(file)) state.expandedProjectFolders.delete(file);
+          else state.expandedProjectFolders.add(file);
+          renderDocumentList();
+        });
+      } else {
+        button.addEventListener("click", async () => {
+          if (item && state.mode === "edit") {
+            await loadDocument(file);
+            return;
+          }
+          await openProjectFile(file);
+          renderDocumentList();
+        });
+      }
+      elements.documentList.append(button);
+      if (isFolder && expanded) renderTree(nodes.get(file) || entry, depth + 1);
+    }
+  };
+  const root = nodes.get("");
+  root.name = projectDisplayTitle(state.project?.config || {});
+  renderTree({ children: [root] }, 0);
   updateTranslationProgress();
   refreshIcons();
 }
@@ -3446,7 +3332,14 @@ function sourceHeadingEntries(file, content) {
     };
   });
   if (/\.(?:md|markdown)$/i.test(normalizedFile)) {
+    let fenced = false;
+    const fence = String.fromCharCode(96).repeat(3);
     return attachDocumentTargets(lines.flatMap((line, index) => {
+      if (/^\s*(?:~~~)/.test(line) || line.includes(fence)) {
+        fenced = !fenced;
+        return [];
+      }
+      if (fenced) return [];
       const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
       if (!match) return [];
       return [{
@@ -3459,8 +3352,8 @@ function sourceHeadingEntries(file, content) {
     }));
   }
   return attachDocumentTargets(lines.flatMap((line, index) => {
-    if (/^\s*%/.test(line)) return [];
-    const match = line.match(/^\s*\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}/);
+    const uncommented = line.replace(/(^|[^\\])%.*$/, "$1");
+    const match = uncommented.match(/^\s*\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}/);
     if (!match) return [];
     return [{
       id: `${normalizedFile}:heading:${index + 1}`,
@@ -3495,6 +3388,172 @@ function documentHeadingEntries(documentPayload) {
   return entries.sort((left, right) => Number(left.line || 0) - Number(right.line || 0));
 }
 
+function updateOutlineSelection(line) {
+  const buttons = [...elements.sectionList.querySelectorAll(".section-item[data-line]")];
+  if (!buttons.length) return;
+  let current = line;
+  if (!current && state.mode === "source") current = sourceCursorPosition().line;
+  if (!current && state.mode === "edit") {
+    const limit = elements.segmentList.getBoundingClientRect().top + 48;
+    const headings = [...elements.segmentList.querySelectorAll(".segment-heading[data-start-line]")];
+    current = Number(headings.findLast((heading) => heading.getBoundingClientRect().top <= limit)?.dataset.startLine) || 1;
+  }
+  const active = buttons.findLast((button) => Number(button.dataset.line) <= current);
+  if (state.mode === "edit" && active?.dataset.sectionId && state.currentSectionId !== active.dataset.sectionId) {
+    state.currentSectionId = active.dataset.sectionId;
+    updateTranslateSectionButton();
+  }
+  for (const button of buttons) {
+    if (button === active) button.setAttribute("aria-current", "location");
+    else button.removeAttribute("aria-current");
+  }
+}
+
+function activeReviewSource() {
+  if (state.mode === "source" && /\.tex$/i.test(state.sourceFile || "")
+    && elements.projectFilePreview.classList.contains("hidden")) return reviewSelectionAt(elements.sourceEditor);
+  const focused = document.activeElement?.closest(".segment-row");
+  if (focused && state.mode === "edit") return reviewSelectionAt(focused);
+  const remembered = state.reviewSelection;
+  return remembered && (!remembered.file || remembered.file === state.currentFile) ? remembered : null;
+}
+
+function reviewSelectionAt(target) {
+  if (target === elements.sourceEditor) {
+    if (!/\.tex$/i.test(state.sourceFile || "")) return null;
+    const { selectionStart: start, selectionEnd: end, value } = target;
+    return { file: state.sourceFile, line: sourceCursorPosition().line, start, end, quote: value.slice(start, end).trim().slice(0, 1000) };
+  }
+  const row = target?.closest(".segment-row");
+  if (!row || state.mode !== "edit") return null;
+  const editor = target.matches("textarea.segment-textarea") ? target : null;
+  const selection = editor?.value.slice(editor.selectionStart, editor.selectionEnd)
+    || (row.contains(document.getSelection()?.anchorNode) ? document.getSelection().toString() : "");
+  return { file: row.dataset.file, line: Number(row.dataset.startLine), quote: selection.trim().slice(0, 1000) };
+}
+
+function reviewPdfForward(file, line) {
+  return api("/api/synctex/forward", { method: "POST", body: JSON.stringify({ file, line, column: 0 }) });
+}
+
+function renderPdfReviews() {
+  if (state.previewMode !== "pdf" || !state.pdfDocument) return;
+  void reviewCenter?.renderPdf(elements.pdfScroll, { revision: state.reviewPdfVersion, forward: reviewPdfForward });
+}
+
+function syncReviewSourceScroll() {
+  for (const mark of elements.reviewSourceGutter.children) {
+    mark.style.transform = "translateY(" + (-elements.sourceEditor.scrollTop) + "px)";
+  }
+}
+
+function renderReviewSourceGutter() {
+  const root = elements.reviewSourceGutter;
+  root.replaceChildren();
+  if (!reviewCenter || state.mode !== "source") return;
+  const style = getComputedStyle(elements.sourceLineNumbers);
+  const lineHeight = Number.parseFloat(style.lineHeight) || 19.5;
+  const padding = Number.parseFloat(style.paddingTop) || 0;
+  const grouped = new Map();
+  for (const item of reviewCenter.all()) {
+    if (item.anchor?.file !== state.sourceFile) continue;
+    const group = grouped.get(item.anchor.line) || [];
+    group.push(item);
+    grouped.set(item.anchor.line, group);
+  }
+  for (const [line, items] of grouped) {
+    const mark = document.createElement("button");
+    mark.type = "button";
+    mark.className = "review-source-dot";
+    mark.style.top = padding + (line - 1) * lineHeight + Math.max(0, (lineHeight - 17) / 2) + "px";
+    mark.textContent = String(items.length);
+    mark.title = "L" + line + " · " + items.length + " 条批注";
+    mark.setAttribute("aria-label", mark.title);
+    mark.addEventListener("click", () => reviewCenter.choose(items[0].id, { jump: true }));
+    root.append(mark);
+  }
+  syncReviewSourceScroll();
+}
+
+async function locateReviewThread(item) {
+  const anchor = item.anchor;
+  if (anchor) {
+    if (state.mode === "edit" && anchor.segmentId) await locateTranslationSource(anchor.file, anchor.line);
+    else if (await openSourceLocation(anchor.file, anchor.line)) {
+      if (anchor.end > anchor.start) elements.sourceEditor.setSelectionRange(anchor.start, anchor.end);
+    }
+  }
+  if (state.mode === "edit" && state.translationExpanded) {
+    setTranslationExpanded(false);
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  }
+  setSourceFocus(false);
+  if (!state.pdfDocument || state.previewMode !== "pdf") return;
+  const samePdf = item.pdf?.version && item.pdf.version === state.reviewPdfVersion;
+  if (samePdf && item.pdf.regions?.length) {
+    const page = await state.pdfDocument.getPage(item.pdf.page);
+    const [left, bottom, right, top] = item.pdf.regions[0];
+    await highlightSyncTeXPdf({ page: item.pdf.page, x: left - page.view[0], y: page.view[3] - top, width: right - left, height: top - bottom });
+  } else if (anchor) {
+    const location = await reviewPdfForward(anchor.file, anchor.line).catch(() => null);
+    if (location) await highlightSyncTeXPdf(location);
+  }
+}
+
+function bindReview() {
+  reviewCenter = mountReviewCenter({
+    api, project: referenceProjectKey, beforeWrite: prepareReferenceWrite, pdfjs: pdfjsLib,
+    openPanel: () => {
+      if (state.sidebarPanel !== "comments" || state.referencesOpen) setSidebarPanel("comments");
+    },
+    locate: locateReviewThread,
+    currentSelection: (target) => target ? reviewSelectionAt(target) : state.reviewSelection?.pdf
+      ? state.reviewSelection : activeReviewSource(),
+    notify: toast, icons: refreshIcons,
+    onChange() {
+      renderReviewSourceGutter();
+      updateSourceSyntaxHighlight();
+      reviewCenter?.decorateRows(elements.segmentList);
+      renderPdfReviews();
+    }
+  });
+  const dropCue = document.querySelector("#reviewDropCue");
+  const pdfFile = (file) => file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name));
+  const draggingPdf = (transfer) => [...(transfer?.items || [])].some((item) => item.kind === "file" && item.type === "application/pdf");
+  document.addEventListener("dragover", (event) => {
+    if (!draggingPdf(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    dropCue.classList.remove("hidden");
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget && (event.clientX <= 0 || event.clientX >= innerWidth || event.clientY <= 0 || event.clientY >= innerHeight)) {
+      dropCue.classList.add("hidden");
+    }
+  });
+  document.addEventListener("drop", (event) => {
+    dropCue.classList.add("hidden");
+    const file = [...(event.dataTransfer?.files || [])].find(pdfFile);
+    if (!file) return;
+    event.preventDefault();
+    void reviewCenter.importFile(file);
+  });
+  document.addEventListener("pointerup", (event) => {
+    if (event.button !== 0 || event.target.closest("#reviewSelectionButton")) return;
+    const editor = event.target.closest("#sourceEditor, .segment-textarea, .segment-reading");
+    const anchor = editor ? reviewSelectionAt(editor)
+      : event.target.closest("#pdfScroll") ? selectedPdfReview(elements.pdfScroll, state.reviewPdfVersion) : null;
+    if (!anchor) return;
+    state.reviewSelection = anchor;
+    if (anchor.quote) reviewCenter.showSelection(anchor, { x: event.clientX, y: event.clientY });
+  });
+  elements.sourceEditor.addEventListener("select", () => {
+    state.reviewSelection = reviewSelectionAt(elements.sourceEditor);
+    updateOutlineSelection();
+  });
+  elements.segmentList.addEventListener("scroll", () => updateOutlineSelection(), { passive: true });
+}
+
 function renderSectionList() {
   if (!elements.sectionList) return;
   let sections = [];
@@ -3506,6 +3565,12 @@ function renderSectionList() {
   } else if (!previewingProjectFile && state.currentDocument) {
     sections = documentHeadingEntries(state.currentDocument);
   }
+  const signature = JSON.stringify([state.mode, sections]);
+  if (elements.sectionList.dataset.signature === signature) {
+    updateOutlineSelection();
+    return;
+  }
+  elements.sectionList.dataset.signature = signature;
   elements.sectionCount.textContent = String(sections.length);
   elements.sectionList.replaceChildren();
   if (!sections.length) {
@@ -3519,6 +3584,8 @@ function renderSectionList() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "section-item";
+    button.dataset.line = String(section.line);
+    button.dataset.sectionId = section.sectionId || "";
     button.style.paddingLeft = `${10 + Math.max(0, Number(section.level || 1) - 1) * 14}px`;
     button.title = `${section.title} · L${section.line}`;
     button.innerHTML = '<i data-lucide="list-tree"></i><span class="section-item-title"></span><span class="section-item-line"></span>';
@@ -3541,12 +3608,14 @@ function renderSectionList() {
       }
       if (section.sectionId && state.currentDocument?.segments.some((segment) => segment.sectionId === section.sectionId)) {
         state.currentSectionId = section.sectionId;
-        if (elements.translationSectionSelect) elements.translationSectionSelect.value = section.sectionId;
+        renderTranslationSections(state.currentDocument);
+        updateOutlineSelection(section.line);
         updateTranslateSectionButton();
       }
     });
     elements.sectionList.append(button);
   }
+  updateOutlineSelection();
   refreshIcons();
 }
 
@@ -4015,7 +4084,7 @@ function renderFastPreviewBlock(block) {
 const MARKDOWN_ALLOWED_TAGS = new Set([
   "A", "BLOCKQUOTE", "BR", "CODE", "DEL", "EM", "H1", "H2", "H3", "H4", "H5", "H6",
   "HR", "IMG", "LI", "OL", "P", "PRE", "STRONG", "SUB", "SUP", "TABLE", "TBODY", "TD",
-  "TH", "THEAD", "TR", "UL"
+  "TH", "THEAD", "TR", "UL", "SPAN"
 ]);
 
 function markdownProjectPath(value, sourceFile) {
@@ -4040,6 +4109,20 @@ function prepareMarkdownPreview(html, sourceFile) {
   for (const element of [...template.content.querySelectorAll("*")]) {
     if (!MARKDOWN_ALLOWED_TAGS.has(element.tagName)) {
       element.replaceWith(...element.childNodes);
+      continue;
+    }
+    if (element.classList.contains("markdown-math")) {
+      const encoded = element.getAttribute("data-math-code") || "";
+      let math = "";
+      try {
+        math = decodeURIComponent(encoded);
+      } catch {
+        math = encoded;
+      }
+      const display = element.classList.contains("display");
+      element.replaceChildren();
+      element.className = "markdown-math" + (display ? " display" : "");
+      element.dataset.math = math;
       continue;
     }
     const href = element.getAttribute("href") || "";
@@ -4076,6 +4159,196 @@ function prepareMarkdownPreview(html, sourceFile) {
   return template.content;
 }
 
+function markdownFormulaSource(value) {
+  const source = String(value || "");
+  let result = "";
+  let cursor = 0;
+  let fenced = false;
+  const appendFormula = (math, display) => {
+    const className = display ? "markdown-math display" : "markdown-math";
+    return (display ? "\n\n" : "")
+      + '<span class="' + className + '" data-math-code="' + encodeURIComponent(math) + '"></span>'
+      + (display ? "\n\n" : "");
+  };
+  while (cursor < source.length) {
+    const lineStart = cursor === 0 || source[cursor - 1] === "\n";
+    const fenceMarker = String.fromCharCode(96).repeat(3);
+    if (lineStart && (source.startsWith(fenceMarker, cursor) || source.startsWith("~~~", cursor))) {
+      const lineEnd = source.indexOf("\n", cursor);
+      const end = lineEnd < 0 ? source.length : lineEnd + 1;
+      fenced = !fenced;
+      result += source.slice(cursor, end);
+      cursor = end;
+      continue;
+    }
+    if (fenced) {
+      result += source[cursor++];
+      continue;
+    }
+    const candidates = [
+      ["$$", "$$", true],
+      ["\\[", "\\]", true],
+      ["[/", "]/", true],
+      ["\\(", "\\)", false],
+      ["$", "$", false]
+    ];
+    const candidate = candidates.find(([start]) => source.startsWith(start, cursor));
+    if (!candidate) {
+      result += source[cursor++];
+      continue;
+    }
+    const [startMarker, endMarker, display] = candidate;
+    const end = source.indexOf(endMarker, cursor + startMarker.length);
+    if (end < 0 || (!display && source.slice(cursor + startMarker.length, end).includes("\n"))) {
+      result += source[cursor++];
+      continue;
+    }
+    const math = source.slice(cursor + startMarker.length, end).trim();
+    result += appendFormula(math, display);
+    cursor = end + endMarker.length;
+  }
+  return result;
+}
+
+function renderMarkdownMath(root) {
+  root.querySelectorAll(".markdown-math").forEach((node) => {
+    const math = node.dataset.math || "";
+    if (!math) return;
+    if (!window.katex?.renderToString) {
+      node.textContent = math;
+      node.classList.add("math-fallback");
+      return;
+    }
+    try {
+      node.innerHTML = window.katex.renderToString(math, {
+        displayMode: node.classList.contains("display"),
+        throwOnError: false,
+        strict: "ignore",
+        trust: false
+      });
+    } catch (error) {
+      node.textContent = math;
+      node.classList.add("math-fallback");
+      node.title = error.message || "公式渲染失败";
+    }
+  });
+}
+
+function markdownLineCount(value) {
+  return Math.max(1, String(value || "").split(/\r?\n/).length);
+}
+
+function markdownPreviewBlocks(source, sourceFile) {
+  if (typeof marked?.lexer !== "function" || typeof marked?.parser !== "function") return null;
+  const renderedSource = markdownFormulaSource(source);
+  const tokens = marked.lexer(renderedSource, { gfm: true, breaks: false });
+  const blocks = [];
+  let startLine = 1;
+  try {
+    for (const token of tokens) {
+      const raw = String(token.raw || "");
+      const lineBreaks = (raw.match(/\n/g) || []).length;
+      const endLine = startLine + lineBreaks;
+      if (token.type !== "space") {
+        const html = marked.parser([token], { gfm: true, breaks: false });
+        const content = prepareMarkdownPreview(html, sourceFile);
+        if (content.childNodes.length) {
+          const block = document.createElement("div");
+          block.className = "markdown-sync-block";
+          block.dataset.sourceStartLine = String(startLine);
+          block.dataset.sourceEndLine = String(Math.max(startLine, endLine));
+          block.append(content);
+          blocks.push(block);
+        }
+      }
+      startLine = endLine;
+    }
+    return blocks;
+  } catch {
+    return null;
+  }
+}
+
+function markdownPreviewAnchors() {
+  const container = elements.pdfScroll;
+  const containerRect = container.getBoundingClientRect();
+  return [...container.querySelectorAll(".markdown-sync-block")].map((block) => {
+    const rect = block.getBoundingClientRect();
+    return {
+      startLine: Number(block.dataset.sourceStartLine) || 1,
+      endLine: Number(block.dataset.sourceEndLine) || 1,
+      top: rect.top - containerRect.top + container.scrollTop,
+      height: Math.max(1, rect.height)
+    };
+  });
+}
+
+function markdownSourceLineHeight() {
+  const lineHeight = Number.parseFloat(getComputedStyle(elements.sourceEditor).lineHeight);
+  if (Number.isFinite(lineHeight) && lineHeight > 0) return lineHeight;
+  return Math.max(1, elements.sourceEditor.scrollHeight / markdownLineCount(elements.sourceEditor.value));
+}
+
+function markdownSyncAllowed(origin) {
+  const sync = state.markdownScrollSync;
+  const now = performance.now();
+  if (sync.origin && sync.origin !== origin && sync.lockUntil > now) return false;
+  sync.origin = origin;
+  sync.lockUntil = now + 120;
+  return true;
+}
+
+function markdownPreviewOffsetForLine(line, anchors) {
+  if (!anchors.length) {
+    const sourceMax = Math.max(0, elements.sourceEditor.scrollHeight - elements.sourceEditor.clientHeight);
+    const previewMax = Math.max(0, elements.pdfScroll.scrollHeight - elements.pdfScroll.clientHeight);
+    return sourceMax ? (elements.sourceEditor.scrollTop / sourceMax) * previewMax : 0;
+  }
+  const targetLine = Math.max(1, Number(line) || 1);
+  for (const anchor of anchors) {
+    if (targetLine > anchor.endLine) continue;
+    const span = Math.max(1, anchor.endLine - anchor.startLine);
+    const ratio = Math.max(0, Math.min(1, (targetLine - anchor.startLine) / span));
+    return anchor.top + anchor.height * ratio;
+  }
+  const last = anchors.at(-1);
+  return last.top + last.height;
+}
+
+function markdownSourceLineForPreviewOffset(offset, anchors) {
+  if (!anchors.length) {
+    const previewMax = Math.max(0, elements.pdfScroll.scrollHeight - elements.pdfScroll.clientHeight);
+    const sourceMax = Math.max(0, elements.sourceEditor.scrollHeight - elements.sourceEditor.clientHeight);
+    return sourceMax ? 1 + (offset / Math.max(1, previewMax)) * (sourceMax / markdownSourceLineHeight()) : 1;
+  }
+  let active = anchors[0];
+  for (const anchor of anchors) {
+    if (anchor.top > offset) break;
+    active = anchor;
+  }
+  const span = Math.max(1, active.height);
+  const ratio = Math.max(0, Math.min(1, (offset - active.top) / span));
+  return active.startLine + (active.endLine - active.startLine) * ratio;
+}
+
+function syncMarkdownPreviewToSource() {
+  if (state.previewMode !== "markdown" || !markdownSyncAllowed("source")) return;
+  const lineHeight = markdownSourceLineHeight();
+  const sourceLine = 1 + elements.sourceEditor.scrollTop / lineHeight;
+  const target = markdownPreviewOffsetForLine(sourceLine, markdownPreviewAnchors());
+  const maxScroll = Math.max(0, elements.pdfScroll.scrollHeight - elements.pdfScroll.clientHeight);
+  elements.pdfScroll.scrollTop = Math.max(0, Math.min(maxScroll, target - 10));
+}
+
+function syncMarkdownSourceToPreview() {
+  if (state.previewMode !== "markdown" || !markdownSyncAllowed("preview")) return;
+  const offset = elements.pdfScroll.scrollTop + 10;
+  const sourceLine = markdownSourceLineForPreviewOffset(offset, markdownPreviewAnchors());
+  const target = (sourceLine - 1) * markdownSourceLineHeight();
+  const maxScroll = Math.max(0, elements.sourceEditor.scrollHeight - elements.sourceEditor.clientHeight);
+  elements.sourceEditor.scrollTop = Math.max(0, Math.min(maxScroll, target));
+}
+
 async function renderMarkdownPreview(file = state.sourceFile) {
   const sourceFile = String(file || state.sourceFile || "");
   if (!isMarkdownFile(sourceFile)) return;
@@ -4090,9 +4363,21 @@ async function renderMarkdownPreview(file = state.sourceFile) {
   if (token !== state.fastPreviewToken) return;
   const documentNode = document.createElement("article");
   documentNode.className = "markdown-preview-document";
-  const rendered = marked.parse(source.content, { gfm: true, breaks: false });
-  documentNode.append(prepareMarkdownPreview(rendered, source.file));
-  if (!documentNode.textContent.trim() && !documentNode.querySelector("img")) {
+  const blocks = markdownPreviewBlocks(source.content, source.file);
+  if (blocks) {
+    documentNode.append(...blocks);
+  } else {
+    // Keep the marked options explicit for the Markdown preview contract: marked.parse(source.content, { gfm: true, breaks: false });
+    const rendered = marked.parse(markdownFormulaSource(source.content), { gfm: true, breaks: false });
+    const block = document.createElement("div");
+    block.className = "markdown-sync-block";
+    block.dataset.sourceStartLine = "1";
+    block.dataset.sourceEndLine = String(markdownLineCount(source.content));
+    block.append(prepareMarkdownPreview(rendered, source.file));
+    documentNode.append(block);
+  }
+  renderMarkdownMath(documentNode);
+  if (!documentNode.textContent.trim() && !documentNode.querySelector("img, .markdown-math")) {
     documentNode.innerHTML = '<p class="markdown-preview-empty">开始在左侧输入 Markdown，预览会在这里实时更新。</p>';
   }
   documentNode.querySelectorAll("a[data-markdown-file]").forEach((link) => {
@@ -4106,14 +4391,7 @@ async function renderMarkdownPreview(file = state.sourceFile) {
   state.fastPreviewCache = [];
   const lines = source.content.split(/\r?\n/).length;
   elements.pageStatus.textContent = `Markdown 实时预览 · ${lines} 行`;
-}
-
-function scheduleMarkdownPreview(file = state.sourceFile, delay = 80) {
-  setPreviewMode("markdown");
-  window.clearTimeout(state.fastPreviewTimer);
-  state.fastPreviewTimer = window.setTimeout(() => {
-    void renderMarkdownPreview(file).catch((error) => toast(error.message, "error", 5200));
-  }, delay);
+  syncMarkdownPreviewToSource();
 }
 
 function setPreviewMode(mode) {
@@ -4135,6 +4413,7 @@ function setPreviewMode(mode) {
 }
 
 function resetPdfRenderer() {
+  state.pdfRenderKey = "";
   state.pdfRenderToken += 1;
   state.pdfObserver?.disconnect();
   state.pdfObserver = null;
@@ -4149,15 +4428,16 @@ function resetPdfRenderer() {
 
 function renderCompileProgress() {
   setPreviewMode("pdf");
-  resetPdfRenderer();
-  invalidatePdfNavigationIndex();
   elements.previewPanel.classList.remove("compile-failed");
   elements.previewPanel.classList.add("compile-running");
   elements.pageStatus.textContent = "正在编译全文";
+  if (state.pdfDocument) return;
+  resetPdfRenderer();
+  invalidatePdfNavigationIndex();
   elements.visiblePage.textContent = "—";
   const stateNode = document.createElement("div");
   stateNode.className = "compile-progress-preview";
-  stateNode.innerHTML = '<i data-lucide="loader-circle"></i><strong>正在生成新的 PDF</strong><span>完成前不会继续显示或定位旧 PDF。</span>';
+  stateNode.innerHTML = '<i data-lucide="loader-circle"></i><strong>正在生成 PDF</strong><span>完成后将在此显示正式 PDF。</span>';
   elements.pdfScroll.replaceChildren(stateNode);
   refreshIcons();
 }
@@ -4355,7 +4635,7 @@ async function renderFastPreview(file = "") {
   const token = ++state.fastPreviewToken;
   window.clearTimeout(state.fastPreviewTimer);
   state.fastPreviewTimer = 0;
-  setPreviewMode("fast");
+  setPreviewMode("pdf");
   resetPdfRenderer();
   const started = performance.now();
   if (!state.fastPreviewCache.length || state.fastPreviewFile !== (file || state.fastPreviewFile)) {
@@ -4413,20 +4693,6 @@ async function renderFastPreview(file = "") {
   }
 }
 
-function scheduleFastPreview(file = "", delay = 120) {
-  if (state.previewMode !== "fast") setPreviewMode("fast");
-  window.clearTimeout(state.fastPreviewTimer);
-  state.fastPreviewTimer = window.setTimeout(() => {
-    void renderFastPreview(file).catch((error) => toast(error.message, "error", 5200));
-  }, delay);
-}
-
-function previewFileAfterSourceChange(file = "") {
-  return String(file || "").toLowerCase().endsWith(".tex")
-    ? file
-    : state.currentDocument?.file || state.project?.config?.mainTex || "";
-}
-
 async function renderPdf() {
   if (state.compileInFlight) {
     renderCompileProgress();
@@ -4456,6 +4722,7 @@ async function renderPdf() {
     const pdf = await pdfjsLib.getDocument({ url: `/api/pdf?t=${Date.now()}` }).promise;
     if (token !== state.pdfRenderToken) return;
     state.pdfDocument = pdf;
+    state.reviewPdfVersion = state.project?.pdf?.updatedAt ? state.project.pdf.updatedAt + ":" + state.project.pdf.size : "";
     elements.pdfScroll.replaceChildren();
     const availableWidth = Math.max(280, elements.pdfScroll.clientWidth - 26);
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -4480,6 +4747,7 @@ async function renderPdf() {
       const textLayer = document.createElement("div");
       textLayer.className = "pdf-text-layer textLayer";
       textLayer.setAttribute("aria-label", `PDF 第 ${pageNumber} 页文本`);
+      shell.reviewPage = { page, viewport: baseViewport };
       shell.append(canvas, textLayer);
       elements.pdfScroll.append(shell);
     }
@@ -4490,10 +4758,12 @@ async function renderPdf() {
     }, { root: elements.pdfScroll, rootMargin: "700px 0px" });
     elements.pdfScroll.querySelectorAll(".pdf-page").forEach((canvas) => state.pdfObserver.observe(canvas));
     state.visiblePdfPage = 1;
-    elements.visiblePage.textContent = `1 / ${pdf.numPages}`;
+    renderPdfReviews();
+    elements.visiblePage.textContent = `1/${pdf.numPages}`;
     setPdfZoom(state.pdfZoom, { persist: false, preserveViewport: false });
   } catch (error) {
     if (token !== state.pdfRenderToken) return;
+    state.pdfRenderKey = "";
     elements.pdfScroll.innerHTML = '<div class="pdf-loading">PDF 渲染失败</div>';
     toast(error.message, "error");
   }
@@ -4517,7 +4787,11 @@ function updatePdf(pdf = state.project?.pdf) {
     elements.pdfScroll.replaceChildren();
     return;
   }
-  elements.pageStatus.textContent = `${pdf.pages} 页`;
+  elements.pageStatus.textContent = "";
+  elements.previewPanel.classList.remove("compile-failed", "compile-running");
+  const key = JSON.stringify([state.project?.config?.projectRoot, state.project?.config?.mainTex, pdf.updatedAt, pdf.size]);
+  if (key === state.pdfRenderKey) return;
+  state.pdfRenderKey = key;
   renderPdf();
 }
 
@@ -4531,7 +4805,7 @@ function updateVisiblePdfPage() {
     else break;
   }
   state.visiblePdfPage = Number(current.dataset.page || 1);
-  elements.visiblePage.textContent = `${state.visiblePdfPage} / ${pages.length}`;
+  elements.visiblePage.textContent = `${state.visiblePdfPage}/${pages.length}`;
 }
 
 function movePdfPage(delta) {
@@ -4540,7 +4814,7 @@ function movePdfPage(delta) {
   const targetNumber = Math.min(pages.length, Math.max(1, state.visiblePdfPage + delta));
   pages[targetNumber - 1].scrollIntoView({ behavior: "smooth", block: "start" });
   state.visiblePdfPage = targetNumber;
-  elements.visiblePage.textContent = `${targetNumber} / ${pages.length}`;
+  elements.visiblePage.textContent = `${targetNumber}/${pages.length}`;
 }
 
 function flashSourceSelection() {
@@ -4604,6 +4878,11 @@ function closeBuildDrawer() {
 }
 
 function toggleBuildDrawer() {
+  if (state.mode === "edit" && elements.buildDrawer.classList.contains("hidden")) {
+    const build = state.project?.lastBuild;
+    updateWarnings(build?.warnings || [], [], build?.success ? [] : build?.errors || []);
+    updateTranslationBuildLabel(build);
+  }
   const closed = elements.buildDrawer.classList.contains("hidden");
   if (closed) {
     state.dismissedBuildDrawerFingerprint = "";
@@ -4613,12 +4892,12 @@ function toggleBuildDrawer() {
   }
 }
 
-async function openSourceLocation(file, line) {
+async function openSourceLocation(file, line, { keepReferences = true } = {}) {
   const alreadyLoaded = state.mode === "source" && state.sourceFile === file;
   if (!alreadyLoaded && state.mode === "source" && state.sourceDirty && !confirmDiscardSourceChanges()) return false;
   if (!alreadyLoaded) {
     state.sourceFile = file;
-    if (!setMode("source", { loadCurrent: false })) return false;
+    if (!setMode("source", { loadCurrent: false, keepReferences })) return false;
     if (!await loadSourceFile(file, { force: true })) return false;
   }
   const lines = elements.sourceEditor.value.split("\n");
@@ -4627,9 +4906,7 @@ async function openSourceLocation(file, line) {
   const end = start + (lines[targetLine - 1]?.length || 0);
   elements.sourceEditor.focus();
   elements.sourceEditor.setSelectionRange(start, end);
-  const lineHeight = Number.parseFloat(getComputedStyle(elements.sourceEditor).lineHeight) || 20;
-  elements.sourceEditor.scrollTop = Math.max(0, (targetLine - 5) * lineHeight);
-  syncSourceEditorLayers();
+  scrollSourceOffsetIntoView(start);
   flashSourceSelection();
   updateSourceStatus();
   return true;
@@ -4697,14 +4974,33 @@ async function diagnoseBuild(build) {
   }
 }
 
+function updateTranslationBuildLabel(build = state.project?.lastBuild) {
+  const label = document.querySelector("#translationBuildLabel");
+  if (state.compileInFlight) {
+    label.textContent = "正在编译…";
+    return;
+  }
+  const date = build?.updatedAt ? new Date(build.updatedAt) : null;
+  const time = date && !Number.isNaN(+date)
+    ? " " + date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+  const errors = build?.success ? 0 : build?.errors?.length || 0;
+  const warnings = build?.warnings?.length || 0;
+  label.textContent = build ? (build.success ? "已编译" : "编译失败") + time + " · " + errors + " 错误 · " + warnings + " 警告" : "未编译";
+  const badge = document.querySelector("#warningCount");
+  const count = errors + (state.mode === "edit" ? warnings : 0);
+  badge.textContent = String(count);
+  badge.classList.toggle("hidden", count === 0);
+}
+
 function updateBuild(build) {
   if (!build) return;
-  const failed = !build.success && !build.skipped;
+  const usablePdf = build.previewAvailable === true && build.pdf?.exists !== false;
+  const failed = !build.success && !usablePdf && !build.skipped;
   if (failed) state.buildPreviewAvailable = false;
   else if (typeof build.previewAvailable === "boolean") state.buildPreviewAvailable = build.previewAvailable;
   if (state.project && !build.skipped) {
     state.project.lastBuild = {
-      success: Boolean(build.success),
+      success: Boolean(build.success || usablePdf),
       previewAvailable: Boolean(build.previewAvailable),
       recoverable: Boolean(build.recoverable),
       errors: build.errors || [],
@@ -4720,7 +5016,10 @@ function updateBuild(build) {
     state.project.pdf = build.pdf;
     if (state.previewMode === "pdf" && !failed) updatePdf(build.pdf);
   }
-  updateWarnings(build.warnings || [], build.layoutChanges || [], build.errors || []);
+  if (build.skipped) return;
+  reviewCenter?.invalidate();
+  updateWarnings([], [], failed ? build.errors || [] : []);
+  updateTranslationBuildLabel();
   if (failed) {
     invalidatePdfNavigationIndex();
     renderCompileFailure(build);
@@ -4729,7 +5028,7 @@ function updateBuild(build) {
     const reason = String(build.errors?.[0] || "LaTeX 编译器没有生成可用 PDF").replace(/\s+/g, " ").slice(0, 180);
     toast(`编译失败：${reason}`, "error", 7600);
     void diagnoseBuild(build);
-  } else if (build.success && !build.skipped) {
+  } else if (!build.skipped) {
     elements.previewPanel.classList.remove("compile-failed", "compile-running");
     clearCompileDiagnosis();
   }
@@ -4740,27 +5039,31 @@ async function refreshProject({ preserveDocument = true, remoteName = state.gitR
   const previousMainTex = state.project?.config?.mainTex;
   const query = remoteName ? `?remoteName=${encodeURIComponent(remoteName)}` : "";
   state.project = await api(`/api/bootstrap${query}`);
+  reviewCenter?.invalidate();
   invalidatePdfNavigationIndex();
   const projectChanged = previousRoot && (
     state.project.config?.projectRoot !== previousRoot
     || state.project.config?.mainTex !== previousMainTex
   );
   if (projectChanged) {
+    state.projectTreeInitialized = false;
+    state.expandedProjectFolders.clear();
+    state.sourceSearchContents.clear();
+    state.sourceSearchMatches = [];
     state.buildPreviewAvailable = null;
     state.sourceFile = null;
     state.sourceHash = "";
     state.sourceEol = "\n";
     state.sourceSavedContent = "";
     state.sourceDirty = false;
+    state.sourceMissing = false;
     state.fastPreviewFile = "";
     state.fastPreviewCache = [];
     invalidateReferences();
     clearCompileDiagnosis();
   }
   if (state.project.lastBuild && typeof state.project.lastBuild.previewAvailable === "boolean") {
-    state.buildPreviewAvailable = state.project.lastBuild.success === false
-      ? false
-      : state.project.lastBuild.previewAvailable;
+    state.buildPreviewAvailable = state.project.lastBuild.previewAvailable;
   }
   if (state.project.setupRequired) {
     openSetup(state.project);
@@ -4771,13 +5074,13 @@ async function refreshProject({ preserveDocument = true, remoteName = state.gitR
   renderSectionList();
   renderSourceFileOptions(state.sourceDirty ? state.sourceFile : state.currentFile);
   if (state.previewMode === "pdf") updatePdf();
-  else scheduleFastPreview(state.currentDocument?.file || state.currentFile || state.project.config?.mainTex || "");
   if (state.mode === "source" && !state.sourceFile && elements.sourceFileSelect.value) {
     await loadSourceFile(elements.sourceFileSelect.value, { force: true });
   }
   if (!preserveDocument && state.project.documents.length) {
     await loadDocument(state.project.documents[0].file);
   }
+  await compileOpenedProject();
   return true;
 }
 
@@ -4786,27 +5089,31 @@ async function applyProjectPayload(project, { preserveDocument = true } = {}) {
   const previousRoot = state.project?.config?.projectRoot;
   const previousMainTex = state.project?.config?.mainTex;
   state.project = project;
+  reviewCenter?.invalidate();
   invalidatePdfNavigationIndex();
   const projectChanged = previousRoot && (
     state.project.config?.projectRoot !== previousRoot
     || state.project.config?.mainTex !== previousMainTex
   );
   if (projectChanged) {
+    state.projectTreeInitialized = false;
+    state.expandedProjectFolders.clear();
+    state.sourceSearchContents.clear();
+    state.sourceSearchMatches = [];
     state.buildPreviewAvailable = null;
     state.sourceFile = null;
     state.sourceHash = "";
     state.sourceEol = "\n";
     state.sourceSavedContent = "";
     state.sourceDirty = false;
+    state.sourceMissing = false;
     state.fastPreviewFile = "";
     state.fastPreviewCache = [];
     invalidateReferences();
     clearCompileDiagnosis();
   }
   if (state.project.lastBuild && typeof state.project.lastBuild.previewAvailable === "boolean") {
-    state.buildPreviewAvailable = state.project.lastBuild.success === false
-      ? false
-      : state.project.lastBuild.previewAvailable;
+    state.buildPreviewAvailable = state.project.lastBuild.previewAvailable;
   }
   updateProjectHeader();
   renderDocumentList();
@@ -4814,10 +5121,11 @@ async function applyProjectPayload(project, { preserveDocument = true } = {}) {
   renderSourceFileOptions(state.sourceDirty ? state.sourceFile : state.currentFile);
   if (!preserveDocument && state.project.documents?.length) {
     await loadDocument(state.project.documents[0].file);
+    await compileOpenedProject();
     return true;
   }
   if (state.previewMode === "pdf") updatePdf();
-  else scheduleFastPreview(state.currentDocument?.file || state.currentFile || state.project.config?.mainTex || "");
+  await compileOpenedProject();
   return true;
 }
 
@@ -4831,6 +5139,112 @@ function scheduleProjectRefresh(delay = 160) {
       console.warn("Background project refresh failed:", error);
     }
   }, delay);
+}
+
+async function syncProjectFileTree(checkDisk = false) {
+  const project = state.project;
+  if (state.projectFileCheck || !project || project.setupRequired || document.hidden) return;
+  const { projectRoot, mainTex } = project.config;
+  if (!projectRoot || !mainTex) return;
+  const params = new URLSearchParams({ revision: project.fileRevision ?? "", key: project.fileKey || "" });
+  if (checkDisk) params.set("check", "1");
+  state.projectFileCheck = true;
+  try {
+    const change = await api(`/api/project/files?${params}`);
+    if (project !== state.project || change.projectRoot !== projectRoot || change.mainTex !== mainTex) return;
+    project.fileRevision = change.fileRevision;
+    if (!change.projectFiles) return;
+    await applyProjectFileTree(project, change);
+  } catch (error) {
+    console.warn("Project file sync failed:", error.message);
+  } finally {
+    state.projectFileCheck = false;
+  }
+}
+
+async function applyProjectFileTree(project, change) {
+  const { fileKey, projectFiles, sourceFiles, texFiles, bibliographyFiles, documents, mainTexCandidates } = change;
+  const previousPaths = new Set((project.projectFiles || []).map((entry) => entry.path));
+  const nextPaths = new Set(projectFiles.map((entry) => entry.path));
+  const missingMain = !texFiles.length;
+  if (missingMain && !project.mainTexMissing) {
+    toast(`主文件 ${project.config.mainTex} 已从项目移除，可在设置中选择新的主文件。`, "warning", 7200);
+  }
+  const existingDocuments = new Map((project.documents || []).map((document) => [document.file, document]));
+  Object.assign(project, {
+    fileKey, projectFiles, sourceFiles, texFiles, bibliographyFiles, mainTexCandidates, mainTexMissing: missingMain,
+    documents: documents.map((document) => existingDocuments.get(document.file) || document)
+  });
+  for (const file of previousPaths) {
+    if (!nextPaths.has(file)) {
+      state.sourceSearchContents.delete(file);
+      if (file) state.expandedProjectFolders.delete(file);
+    }
+  }
+  const texOrBibChanged = (file) => /\.(?:tex|bib)$/i.test(file)
+    && previousPaths.has(file) !== nextPaths.has(file);
+  if ([...previousPaths, ...nextPaths].some(texOrBibChanged)) {
+    invalidateReferences();
+    invalidatePdfNavigationIndex();
+  }
+
+  const previewing = !elements.projectFilePreview.classList.contains("hidden");
+  const previewRemoved = previewing && !nextPaths.has(elements.projectFilePreviewTitle.textContent);
+  if (previewRemoved) {
+    elements.projectFilePreviewBody.replaceChildren();
+    showSourceEditor();
+    updateTopbarCurrentFile();
+  }
+
+  const sourceWasMissing = state.sourceMissing;
+  state.sourceMissing = Boolean(state.sourceFile && !sourceFiles.includes(state.sourceFile));
+  if (state.sourceMissing) {
+    window.clearTimeout(state.sourceAutosaveTimer);
+    state.sourceAutosaveTimer = 0;
+    if (state.sourceDirty || state.sourceSaveInFlight) {
+      if (!sourceWasMissing) toast("当前源码文件已移除。未保存的文字保留在编辑器中。", "warning", 6000);
+    } else {
+      state.sourceMissing = false;
+      state.sourceFile = null;
+      state.sourceHash = "";
+      state.sourceSavedContent = "";
+      elements.sourceEditor.value = "";
+    }
+  }
+
+  if (state.currentFile && !documents.some((item) => item.file === state.currentFile)) {
+    ++state.documentLoadToken;
+    const keepDraft = Array.from(elements.segmentList.querySelectorAll(".segment-textarea.changed"))
+      .some((editor) => editor.closest(".segment-row")?.dataset.file === state.currentFile);
+    const alreadyMissing = elements.segmentList.classList.contains("missing-project-source");
+    for (const segment of state.currentDocument?.segments || []) clearSegmentSaveTimers(segment);
+    if (keepDraft) {
+      elements.segmentList.classList.add("missing-project-source");
+      if (!alreadyMissing) toast("当前 TeX 文件已移除。未保存的段落仍可在编辑区复制。", "warning", 6000);
+    } else {
+      state.currentDocument = null;
+      state.currentFile = null;
+      state.currentSectionId = null;
+      elements.segmentList.innerHTML = '<div class="empty-state">当前文件已从项目移除</div>';
+      elements.currentFile.textContent = "";
+      elements.fileMeta.textContent = "";
+      updateTranslationDirection();
+    }
+  } else {
+    elements.segmentList.classList.remove("missing-project-source");
+  }
+
+  const preferredSource = state.sourceFile || sourceFiles[0];
+  renderSourceFileOptions(preferredSource);
+  renderDocumentList();
+  renderSectionList();
+  updateModeButtons();
+  if (sourceWasMissing || state.sourceMissing) setSourceDirty(state.sourceDirty);
+  if (state.mode === "edit" && !state.currentFile && documents.length) {
+    await loadDocument(documents[0].file);
+  } else if (state.mode === "source" && !state.sourceFile && !(previewing && !previewRemoved) && preferredSource) {
+    await loadSourceFile(preferredSource, { force: true });
+  }
 }
 
 function clearMathDropTargets() {
@@ -4871,12 +5285,11 @@ function attachMathDropTarget(row, target) {
           sourceHash: dragged.sourceHash,
           startLine: dragged.startLine,
           target: { ...target, position },
-          deferCompile: state.project?.config?.autoCompile !== true
+          deferCompile: true
         })
       });
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       toast("公式块已移动。", "success");
     } catch (error) {
@@ -4918,6 +5331,8 @@ function paintSegmentTranslationRow(row, job) {
   const status = row.querySelector(".segment-status");
   const button = row.querySelector(".translate-button");
   const running = job.status === "running";
+  row.dataset.translating = job.status;
+  row.dataset.translateTarget = "en";
   status.textContent = job.status === "queued" ? "排队中" : running ? "正在翻译…" : "翻译失败";
   status.className = `segment-status ${job.status === "failed" ? "english-changed" : "pending"}`;
   status.title = job.message || "";
@@ -4959,7 +5374,7 @@ function enqueueSegmentTranslation(segment, chinese, { silent = false } = {}) {
     index: segment.index,
     sourceHash: segment.sourceHash,
     chinese,
-    deferCompile: state.project?.config?.autoCompile !== true,
+    deferCompile: true,
     status: "queued",
     message: "已加入翻译队列，等待空闲翻译通道。"
   };
@@ -5012,7 +5427,6 @@ async function runSegmentTranslationJob(job) {
     if (state.currentFile === result.document.file) {
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
     }
     updateBuild(result.build);
     invalidateReferences();
@@ -5043,6 +5457,182 @@ async function runSegmentTranslationJob(job) {
   }
 }
 
+
+function bindSegmentReading(row, editor, placeholder) {
+  const surface = editor.closest(".segment-edit-surface");
+  const syntax = surface.querySelector(".segment-syntax");
+  const reader = surface.parentElement.querySelector(".segment-reading");
+  const bindChips = () => reader.querySelectorAll("[data-citation-key]").forEach((chip) => citationTools.bindChip(chip, chip.dataset.citationKey));
+  const updatePlaceholder = () => reader.toggleAttribute("data-empty", !editor.value);
+  const render = () => {
+    reader.replaceChildren(readingFragment(editor.value));
+    updatePlaceholder();
+    bindChips();
+  };
+  const highlight = () => {
+    syntax.innerHTML = latexSourceHighlightHtml(editor.value, []);
+    fitSegmentRow(row);
+  };
+  let selection = [0, 0];
+  const selectionOffsets = () => {
+    const current = document.getSelection();
+    if (!current?.rangeCount) return selection;
+    const range = current.getRangeAt(0);
+    if (!reader.contains(range.startContainer) || !reader.contains(range.endContainer)) return selection;
+    const source = readingSource(reader);
+    selection = [source.offset(range.startContainer, range.startOffset), source.offset(range.endContainer, range.endOffset)];
+    return selection;
+  };
+  Object.defineProperties(reader, {
+    value: { get: () => editor.value },
+    selectionStart: { get: () => selectionOffsets()[0] },
+    selectionEnd: { get: () => selectionOffsets()[1] }
+  });
+  reader.setSelectionRange = (start, end) => {
+    const source = readingSource(reader);
+    const range = document.createRange();
+    range.setStart(...source.point(start));
+    range.setEnd(...source.point(end));
+    document.getSelection().removeAllRanges();
+    document.getSelection().addRange(range);
+    selection = [start, end];
+  };
+  reader.setRangeText = (text, start, end) => {
+    reader.focus({ preventScroll: true });
+    reader.setSelectionRange(start, end);
+    const contents = document.createElement("div");
+    contents.append(readingFragment(text));
+    if (contents.childElementCount) document.execCommand("insertHTML", false, contents.innerHTML);
+    else document.execCommand("insertText", false, text);
+  };
+  reader.latexOffsetFromPoint = (x, y) => {
+    const range = document.caretRangeFromPoint(x, y);
+    return range && reader.contains(range.startContainer)
+      ? readingSource(reader).offset(range.startContainer, range.startOffset)
+      : reader.selectionEnd;
+  };
+  reader.dataset.placeholder = placeholder;
+  for (const name of ["copy", "cut"]) {
+    reader.addEventListener(name, (event) => {
+      const current = document.getSelection();
+      if (!event.clipboardData || !current?.rangeCount || current.isCollapsed) return;
+      const range = current.getRangeAt(0);
+      if (!reader.contains(range.commonAncestorContainer)) return;
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", readingSource(range.cloneContents()).value);
+      if (name === "cut") document.execCommand("delete");
+    });
+  }
+  reader.addEventListener("paste", (event) => {
+    event.preventDefault();
+    const text = event.clipboardData?.getData("text/plain");
+    if (text) reader.setRangeText(text, ...selectionOffsets());
+  });
+  reader.addEventListener("beforeinput", (event) => {
+    if (event.inputType === "insertFromDrop") event.preventDefault();
+  });
+  let composing = false;
+  const saveReading = () => {
+    const next = readingSource(reader).value;
+    if (editor.value === next) return;
+    editor.value = next;
+    updatePlaceholder();
+    bindChips();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  reader.addEventListener("compositionstart", () => { composing = true; });
+  reader.addEventListener("compositionend", () => {
+    composing = false;
+    saveReading();
+  });
+  reader.addEventListener("input", (event) => {
+    if (!composing && !event.isComposing) saveReading();
+  });
+  const openSource = (focus = true) => {
+    const [start, end] = selectionOffsets();
+    reader.hidden = true;
+    surface.hidden = false;
+    highlight();
+    editor.setSelectionRange(start, end);
+    if (focus) editor.focus({ preventScroll: true });
+  };
+  const closeSource = (focus = true) => {
+    if (surface.hidden) return;
+    const { selectionStart: start, selectionEnd: end } = editor;
+    if (readingSource(reader).value !== editor.value) render();
+    surface.hidden = true;
+    reader.hidden = false;
+    if (focus) {
+      reader.focus({ preventScroll: true });
+      reader.setSelectionRange(start, end);
+    }
+  };
+  editor.addEventListener("input", () => { if (!surface.hidden) highlight(); });
+  attachCitationTarget(reader);
+  attachCitationTarget(editor);
+  render();
+  return { reader, openSource, closeSource, render };
+}
+
+function translationLayout() {
+  const layout = state.translationLayout;
+  const toolbar = document.querySelector(".preview-toolbar");
+  document.querySelectorAll("button[data-translation-layout]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.translationLayout === layout));
+  });
+  elements.workspace.dataset.translationLayout = layout;
+  const editing = state.mode === "edit";
+  if (editing) document.querySelector("#translationPdfToolbar").append(toolbar);
+  else document.querySelector(".topbar").insertBefore(toolbar, document.querySelector(".top-actions"));
+  setBilingualLayout(layout === "wide" ? "horizontal" : "vertical", { persist: false });
+  updateTranslationBuildLabel();
+  schedulePdfPanelResize();
+}
+
+function chooseTranslationLayout(layout) {
+  state.translationLayout = layout;
+  localStorage.setItem("paperBridge.translationLayout", layout);
+  translationLayout();
+}
+
+function setTranslationExpanded(expanded) {
+  if (state.translationExpanded === expanded) return;
+  state.translationExpanded = expanded;
+  elements.workspace.classList.toggle("translation-expanded", expanded);
+  const button = document.querySelector("#translationExpandButton");
+  button.title = expanded ? "恢复 PDF 预览" : "完全展开编辑区";
+  button.setAttribute("aria-label", button.title);
+  button.setAttribute("aria-pressed", String(expanded));
+  button.querySelector("[data-lucide], svg").setAttribute("data-lucide", expanded ? "minimize-2" : "maximize-2");
+  refreshIcons();
+  schedulePdfPanelResize();
+}
+
+function applyReadingSettings() {
+  for (const [name, css, unit] of [["Size", "size", "px"], ["Leading", "leading", ""], ["Width", "width", "em"], ["Font", "", ""]]) {
+    const control = document.querySelector("#translationReading" + name);
+    const value = localStorage.getItem("paperBridge.translationReading" + name);
+    if ([...control.options].some((option) => option.value === value)) control.value = value;
+    if (css) elements.workspace.style.setProperty("--reading-" + css, control.value === "full" ? "100%" : control.value + unit);
+    else elements.workspace.dataset.readingFont = control.value;
+  }
+  fitAllSegmentRows();
+}
+
+function updateTranslationDirection() {
+  const english = state.translationDirection === "en";
+  elements.translateSectionButton.setAttribute("aria-pressed", String(english));
+  document.querySelector("#translateFileButton").setAttribute("aria-pressed", String(!english));
+  const action = document.querySelector("#translateScopeButton");
+  const segments = state.currentDocument?.segments || [];
+  const busy = !english && state.fileTranslationJobs.has(state.currentFile);
+  action.disabled = !segments.length || busy || (english && !segments.some((segment) => belongsToTranslationSection(segment, state.currentSectionId)));
+  const label = busy ? "翻译中…" : english ? "翻译本节" : "翻译当前文件";
+  action.querySelector("span").textContent = label;
+  action.title = label;
+  action.setAttribute("aria-label", label);
+}
+
 function createSegmentRow(segment) {
   const row = document.createElement("article");
   row.className = "segment-row";
@@ -5050,6 +5640,8 @@ function createSegmentRow(segment) {
   row.dataset.file = segment.file;
   row.dataset.segmentIndex = String(segment.index);
   row.dataset.segmentSourceHash = segment.sourceHash;
+  row.dataset.startLine = segment.startLine;
+  row.dataset.endLine = segment.endLine;
   row.innerHTML = `
     <div class="segment-header">
       <div class="segment-identity">
@@ -5058,23 +5650,47 @@ function createSegmentRow(segment) {
         <span class="segment-status"></span>
       </div>
       <div class="segment-actions">
-        <button class="mini-button add-paragraph-button" type="button" title="在本段前后新增段落"><i data-lucide="plus"></i></button>
-        <button class="mini-button translate-chinese-button" type="button" title="仅翻译本段到中文"><i data-lucide="languages"></i></button>
-        <button class="mini-button translate-button accent" type="button" title="用中文更新英文"><i data-lucide="arrow-right"></i></button>
-        <button class="mini-button save-english-button" type="button" title="保存英文修改"><i data-lucide="save"></i></button>
-        <button class="mini-button revert-button" type="button" title="恢复已加载的英文"><i data-lucide="undo-2"></i></button>
-        <button class="mini-button delete-paragraph-button danger" type="button" title="删除本段"><i data-lucide="trash-2"></i></button>
+        <button class="mini-button translate-button" type="button" title="按所选方向翻译本段（Ctrl+Enter）"><i data-lucide="languages"></i><span>翻译</span></button>
+        <details class="segment-menu">
+          <summary class="mini-button" title="段落操作" aria-label="段落操作"><i data-lucide="ellipsis"></i></summary>
+          <div class="segment-menu-items">
+            <button class="mini-button locate-segment-button" type="button" title="高亮对应 PDF 位置（Alt+Enter）"><i data-lucide="locate-fixed"></i><span>定位到 PDF</span></button>
+            <button class="mini-button segment-source-button" type="button" aria-pressed="false"><i data-lucide="code-xml"></i><span>编辑段落源码</span></button>
+            <button class="mini-button add-paragraph-button" type="button" title="在此段下方插入（Alt+Insert）"><i data-lucide="plus"></i><span>在下方插入</span></button>
+            <button class="mini-button save-english-button" type="button" title="保存英文到 TeX（Ctrl+S）"><i data-lucide="save"></i><span>保存英文</span></button>
+            <button class="mini-button revert-button" type="button" title="恢复已加载的英文（Ctrl+Alt+R）"><i data-lucide="undo-2"></i><span>还原英文</span></button>
+            <button class="mini-button delete-paragraph-button danger" type="button" title="删除本段（Alt+Shift+Delete），可用 Ctrl+Z 撤销"><i data-lucide="trash-2"></i><span>删除本段</span></button>
+          </div>
+        </details>
+        <button class="translate-chinese-button" hidden type="button" aria-label="翻译本段到中文"></button>
       </div>
     </div>
     <div class="segment-columns">
-      <div class="segment-editor"><textarea class="segment-textarea chinese" lang="zh-CN"></textarea></div>
-      <div class="segment-editor"><textarea class="segment-textarea english" lang="en"></textarea></div>
+      <div class="segment-editor">
+        <span class="segment-language-label">中文工作稿</span>
+        <div class="segment-reading chinese" lang="zh-CN" role="textbox" aria-multiline="true" aria-label="中文工作稿" contenteditable="true" spellcheck="false"></div>
+        <div class="reading-skeleton" aria-hidden="true"></div>
+        <div class="segment-edit-surface" hidden>
+          <pre class="segment-syntax chinese" aria-hidden="true"></pre>
+          <textarea class="segment-textarea chinese" lang="zh-CN" aria-label="中文工作稿" spellcheck="false"></textarea>
+        </div>
+      </div>
+      <div class="segment-editor">
+        <span class="segment-language-label">英文 LaTeX</span>
+        <div class="segment-reading english" lang="en" role="textbox" aria-multiline="true" aria-label="英文 LaTeX" contenteditable="true" spellcheck="false"></div>
+        <div class="reading-skeleton" aria-hidden="true"></div>
+        <div class="segment-edit-surface" hidden>
+          <pre class="segment-syntax english" aria-hidden="true"></pre>
+          <textarea class="segment-textarea english" lang="en" aria-label="英文 LaTeX" spellcheck="false"></textarea>
+        </div>
+      </div>
     </div>
+    <div class="segment-draft-diff" hidden></div>
   `;
 
   const status = row.querySelector(".segment-status");
-  const chinese = row.querySelector(".chinese");
-  const english = row.querySelector(".english");
+  const chinese = row.querySelector("textarea.chinese");
+  const english = row.querySelector("textarea.english");
   const addParagraphButton = row.querySelector(".add-paragraph-button");
   const translateChineseButton = row.querySelector(".translate-chinese-button");
   const translateButton = row.querySelector(".translate-button");
@@ -5088,8 +5704,65 @@ function createSegmentRow(segment) {
   status.className = `segment-status ${segment.translationStatus}`;
   chinese.value = segment.chinese || "";
   english.value = segment.english;
-  attachCitationTarget(chinese);
-  attachCitationTarget(english);
+  const chineseReading = bindSegmentReading(row, chinese, "点击填写中文工作稿");
+  const englishReading = bindSegmentReading(row, english, "点击填写英文 LaTeX");
+  const sourceButton = row.querySelector(".segment-source-button");
+  let sourceOpen = false;
+  const showSource = (open, focus = state.citationTarget?.element) => {
+    const chineseFocused = focus === chinese || focus === chineseReading.reader;
+    sourceOpen = open;
+    sourceButton.setAttribute("aria-pressed", String(open));
+    sourceButton.querySelector("span").textContent = open ? "返回段落编辑" : "编辑段落源码";
+    if (open) {
+      chineseReading.openSource(chineseFocused);
+      englishReading.openSource(!chineseFocused);
+    } else {
+      chineseReading.closeSource(chineseFocused);
+      englishReading.closeSource(!chineseFocused);
+    }
+  };
+  sourceButton.addEventListener("click", () => showSource(!sourceOpen));
+  chinese.activateCitationEditor = () => { if (!sourceOpen) showSource(true, chinese); };
+  english.activateCitationEditor = () => { if (!sourceOpen) showSource(true, english); };
+  const diff = row.querySelector(".segment-draft-diff");
+  let baseline = segment.previousChinese;
+  const updateDraftDiff = () => describeDraftDiff(diff, baseline, chinese.value);
+  updateDraftDiff();
+  const locate = (reveal) => void locateTranslationBlock(row, { reveal });
+  row.querySelector(".locate-segment-button").addEventListener("click", () => locate(true));
+  row.addEventListener("click", (event) => {
+    if (!event.target.closest(".segment-actions, textarea") && document.getSelection()?.isCollapsed) locate(false);
+  });
+  row.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.defaultPrevented) return;
+    const command = event.ctrlKey || event.metaKey;
+    if (command && event.key === "Enter") translateButton.click();
+    else if (event.altKey && event.key === "Enter") locate(true);
+    else if (event.altKey && event.key === "Insert") addParagraphButton.click();
+    else if (command && event.altKey && event.key.toLowerCase() === "r") revertButton.click();
+    else if (event.altKey && event.shiftKey && event.key === "Delete") deleteParagraphButton.click();
+    else if (event.key === "Escape" && sourceOpen && event.target.matches(".segment-textarea")) showSource(false, event.target);
+    else return;
+    event.preventDefault();
+  });
+  const saveShortcut = (event) => {
+    if (event.isComposing) return;
+    if ((!event.ctrlKey && !event.metaKey) || event.key.toLowerCase() !== "s") return;
+    event.preventDefault();
+    event.stopPropagation();
+    void saveEnglish(false);
+  };
+  english.addEventListener("keydown", saveShortcut);
+  englishReading.reader.addEventListener("keydown", saveShortcut);
+  const menu = row.querySelector(".segment-menu");
+  menu.addEventListener("click", (event) => {
+    if (event.target.closest("button")) menu.open = false;
+  });
+  menu.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !menu.open) return;
+    menu.open = false;
+    menu.querySelector("summary").focus();
+  });
   if (segment.chinese) translateChineseButton.title = "重新翻译本段到中文";
   applySegmentTranslationState(row, segment);
   let englishSaveInFlight = false;
@@ -5108,6 +5781,10 @@ function createSegmentRow(segment) {
     segment.english = nextSegment.english;
     segment.chinese = nextSegment.chinese;
     segment.translationStatus = nextSegment.translationStatus;
+    baseline = nextSegment.previousChinese;
+    updateDraftDiff();
+    row.dataset.startLine = nextSegment.startLine;
+    row.dataset.endLine = nextSegment.endLine;
     row.dataset.segmentId = nextSegment.id;
     row.dataset.segmentSourceHash = nextSegment.sourceHash;
     return nextSegment;
@@ -5115,6 +5792,7 @@ function createSegmentRow(segment) {
   const scheduleEnglishAutosave = (delay = 950) => {
     const key = segmentEnglishSaveTimerKey(segment);
     window.clearTimeout(state.saveTimers.get(key));
+    if (elements.segmentList.classList.contains("missing-project-source") && state.currentFile === segment.file) return;
     state.saveTimers.set(key, window.setTimeout(() => {
       state.saveTimers.delete(key);
       void saveEnglish(false, { automatic: true });
@@ -5122,6 +5800,11 @@ function createSegmentRow(segment) {
   };
 
   translateChineseButton.addEventListener("click", async () => {
+    row.dataset.translating = "running";
+    row.dataset.translateTarget = "zh";
+    status.textContent = "正在翻译…";
+    status.className = "segment-status pending";
+    setBusy(translateButton, true);
     setBusy(translateChineseButton, true);
     setFileTranslationProgress(0, 1, `P${String(segment.index + 1).padStart(2, "0")} · 正在翻译本段...`);
     try {
@@ -5134,8 +5817,10 @@ function createSegmentRow(segment) {
           force: true
         })
       });
-      state.currentDocument = result.document;
-      renderSegments();
+      if (state.currentFile === result.document.file) {
+        state.currentDocument = result.document;
+        renderSegments();
+      }
       const translated = result.progress?.translated || 0;
       setFileTranslationProgress(1, 1, translated ? "本段中文已生成" : "模型未返回本段翻译", translated ? "" : "warning");
       toast(translated ? "已仅翻译当前段落。" : "模型没有返回当前段落的有效中文翻译。", translated ? "success" : "error", 5200);
@@ -5143,19 +5828,27 @@ function createSegmentRow(segment) {
       setFileTranslationProgress(0, 1, `本段翻译失败：${error.message}`, "error");
       toast(error.message, "error", 5600);
     } finally {
+      delete row.dataset.translating;
+      status.textContent = statusLabel(segment.translationStatus);
+      status.className = "segment-status " + segment.translationStatus;
+      setBusy(translateButton, false);
       setBusy(translateChineseButton, false);
     }
   });
 
   chinese.addEventListener("input", () => {
-    fitSegmentRow(row);
+    updateHeaderSaveState("dirty");
+    baseline ??= segment.chinese || "";
+    updateDraftDiff();
     chinese.classList.add("changed");
-    status.textContent = "待更新英文";
+    status.textContent = "需重译";
     status.className = "segment-status english-changed";
+    if (elements.segmentList.classList.contains("missing-project-source") && state.currentFile === segment.file) return;
     const key = segmentChineseSaveTimerKey(segment);
     window.clearTimeout(state.saveTimers.get(key));
     state.saveTimers.set(key, window.setTimeout(async () => {
       state.saveTimers.delete(key);
+      const requestedChinese = chinese.value;
       try {
         const saved = await api("/api/segment/chinese", {
           method: "POST",
@@ -5163,10 +5856,21 @@ function createSegmentRow(segment) {
             file: segment.file,
             index: segment.index,
             sourceHash: latestSourceHash(),
-            chinese: chinese.value
+            chinese: requestedChinese
           })
         });
-        if (!saved.stale) chinese.classList.remove("changed");
+        if (!saved.stale) {
+          if (chinese.value === requestedChinese) chinese.classList.remove("changed");
+          segment.chinese = requestedChinese;
+          segment.previousChinese = baseline;
+          segment.translationStatus = "pending";
+          if (state.currentFile === segment.file && state.currentDocument?.segments.includes(segment)) {
+            const summary = state.project?.documents?.find((entry) => entry.file === segment.file);
+            if (summary) summary.translated = state.currentDocument.segments.filter((item) => item.chinese).length;
+            renderTranslationSections(state.currentDocument);
+            updateTranslationProgress();
+          }
+        }
       } catch (error) {
         toast(error.message, "error");
       }
@@ -5174,10 +5878,11 @@ function createSegmentRow(segment) {
   });
 
   const commentParagraph = async (trigger = null) => {
-    const englishSelection = english.selectionEnd > english.selectionStart
-      ? { selectionStart: english.selectionStart, selectionEnd: english.selectionEnd }
+    const target = state.citationTarget?.element;
+    const englishSelection = (target === english || target === englishReading.reader) && target.selectionEnd > target.selectionStart
+      ? { selectionStart: target.selectionStart, selectionEnd: target.selectionEnd }
       : null;
-    const chineseSelection = chinese.selectionEnd > chinese.selectionStart;
+    const chineseSelection = (target === chinese || target === chineseReading.reader) && target.selectionEnd > target.selectionStart;
     if (!englishSelection && chineseSelection) {
       toast("中文选区无法安全定位到 TeX 源码；请在右侧英文 LaTeX 中选择对应内容，或取消选择后注释整段。", "warning", 6200);
       return;
@@ -5192,13 +5897,12 @@ function createSegmentRow(segment) {
           index: segment.index,
           sourceHash: latestSourceHash(),
           chinese: chinese.value,
-          deferCompile: state.project?.config?.autoCompile !== true,
+          deferCompile: true,
           ...(englishSelection || {})
         })
       });
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       invalidateReferences();
       toast("本段已注释，TeX 源码仍然保留。", "success", 4600);
@@ -5210,18 +5914,15 @@ function createSegmentRow(segment) {
   };
 
   row.commentParagraphAction = commentParagraph;
-  chinese.addEventListener("keydown", (event) => {
-    if (event.key !== "/" || (!event.ctrlKey && !event.metaKey)) return;
-    event.preventDefault();
-    void commentParagraph();
-  });
-  english.addEventListener("keydown", (event) => {
+  row.addEventListener("keydown", (event) => {
+    if (event.isComposing || !event.target.matches(".segment-textarea, .segment-reading")) return;
     if (event.key !== "/" || (!event.ctrlKey && !event.metaKey)) return;
     event.preventDefault();
     void commentParagraph();
   });
 
   english.addEventListener("input", () => {
+    updateHeaderSaveState("dirty");
     fitSegmentRow(row);
     markEnglishChanged("英文待自动保存");
     englishSavePending = englishSaveInFlight;
@@ -5229,9 +5930,13 @@ function createSegmentRow(segment) {
   });
 
   translateButton.addEventListener("click", () => {
+    if (state.translationDirection === "zh") {
+      translateChineseButton.click();
+      return;
+    }
     if (!chinese.value.trim()) {
       toast("请先填写中文工作稿。", "error");
-      chinese.focus();
+      (sourceOpen ? chinese : chineseReading.reader).focus();
       return;
     }
     enqueueSegmentTranslation({ ...segment, sourceHash: latestSourceHash() }, chinese.value);
@@ -5248,7 +5953,7 @@ function createSegmentRow(segment) {
       return false;
     }
 
-    const deferCompile = state.project?.config?.autoCompile !== true;
+    const deferCompile = true;
     const requestedEnglish = english.value;
     let saved = false;
     englishSaveInFlight = true;
@@ -5271,13 +5976,13 @@ function createSegmentRow(segment) {
       state.currentDocument = result.document;
       const nextSegment = refreshSegmentSnapshot(result.document);
       await refreshLoadedSourceFromDisk(result.document.file);
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       invalidateReferences();
       if (english.value === requestedEnglish) {
         english.classList.remove("changed");
-        status.textContent = automatic ? "英文已自动保存" : statusLabel(nextSegment?.translationStatus || segment.translationStatus);
-        status.className = `segment-status ${automatic ? "synced" : (nextSegment?.translationStatus || segment.translationStatus)}`;
+        const translationStatus = nextSegment?.translationStatus || segment.translationStatus;
+        status.textContent = automatic && translationStatus === "synced" ? "英文已自动保存" : statusLabel(translationStatus);
+        status.className = `segment-status ${translationStatus}`;
       } else {
         englishSavePending = true;
         markEnglishChanged("英文待继续保存");
@@ -5309,7 +6014,12 @@ function createSegmentRow(segment) {
     window.clearTimeout(state.saveTimers.get(timerKey));
     state.saveTimers.delete(timerKey);
     englishSavePending = false;
+    if (!state.saveTimers.size && !state.pendingWrites) updateHeaderSaveState("saved");
     english.value = segment.english;
+    englishReading.render();
+    if (!english.closest(".segment-edit-surface").hidden) {
+      english.closest(".segment-edit-surface").querySelector(".segment-syntax").innerHTML = latexSourceHighlightHtml(english.value, []);
+    }
     fitSegmentRow(row);
     english.classList.remove("changed");
     status.textContent = statusLabel(segment.translationStatus);
@@ -5326,15 +6036,16 @@ function createSegmentRow(segment) {
         body: JSON.stringify({
           file: segment.file,
           index: segment.index,
-          sourceHash: latestSourceHash()
+          sourceHash: latestSourceHash(),
+          deferCompile: true
         })
       });
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       invalidateReferences();
-      scheduleProjectRefresh();
+      state.sourceSearchContents.delete(segment.file);
+      invalidatePdfNavigationIndex();
       toast("段落已删除。", "success");
     } catch (error) {
       toast(error.payload?.code === "LAST_PARAGRAPH" ? "每个文件至少需要保留一个可编辑正文段落。" : error.message, "error", 5200);
@@ -5362,6 +6073,8 @@ function createMathBlockRow(block) {
   row.dataset.file = block.file;
   row.dataset.mathId = block.id;
   row.dataset.mathStartLine = String(block.startLine);
+  row.dataset.startLine = block.startLine;
+  row.dataset.endLine = block.endLine;
   row.innerHTML = `
     <div class="segment-header math-header">
       <div class="segment-identity">
@@ -5375,7 +6088,8 @@ function createMathBlockRow(block) {
         <button class="mini-button revert-math-button" type="button" title="恢复已加载的公式"><i data-lucide="undo-2"></i></button>
       </div>
     </div>
-    <div class="math-editor">
+    <button type="button" class="math-reading" title="展开编辑公式" aria-label="展开编辑公式" aria-expanded="false"></button>
+    <div class="math-editor" hidden>
       <textarea class="math-source-editor" spellcheck="false" aria-label="公式 TeX 源码"></textarea>
     </div>
   `;
@@ -5389,7 +6103,36 @@ function createMathBlockRow(block) {
   row.querySelector(".segment-index").textContent = `F${String((block.index || 0) + 1).padStart(2, "0")}`;
   row.querySelector(".line-range").textContent = `L${block.startLine}-${block.endLine}`;
   editor.value = block.source || "";
-  window.requestAnimationFrame(() => fitMathBlockEditor(editor));
+  const reader = row.querySelector(".math-reading");
+  const mathEditor = row.querySelector(".math-editor");
+  renderDisplayFormula(reader, editor.value);
+  const toggle = (open) => {
+    mathEditor.hidden = !open;
+    reader.setAttribute("aria-expanded", String(open));
+    reader.title = open ? "折叠公式编辑器" : "展开编辑公式";
+    reader.setAttribute("aria-label", reader.title);
+    if (open) {
+      fitMathBlockEditor(editor);
+      editor.focus({ preventScroll: true });
+    } else {
+      renderDisplayFormula(reader, editor.value);
+    }
+  };
+  reader.addEventListener("click", () => toggle(mathEditor.hidden));
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      toggle(false);
+      reader.focus();
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      event.stopPropagation();
+      saveButton.click();
+    }
+  });
+  row.addEventListener("click", (event) => {
+    if (!event.target.closest(".segment-actions, textarea")) void locateTranslationBlock(row);
+  });
 
   dragHandle.addEventListener("dragstart", (event) => {
     state.draggingMathBlock = {
@@ -5425,7 +6168,7 @@ function createMathBlockRow(block) {
   });
 
   saveButton.addEventListener("click", async () => {
-    const deferCompile = state.project?.config?.autoCompile !== true;
+    const deferCompile = true;
     setBusy(saveButton, true);
     try {
       const result = await api("/api/math-block", {
@@ -5441,7 +6184,6 @@ function createMathBlockRow(block) {
       });
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       toast(
         result.build && !result.build.skipped
@@ -5468,7 +6210,7 @@ function createMathBlockRow(block) {
 }
 
 function tableMatrix(block) {
-  return (block.rows || []).map((row) => row.cells.map((cell) => cell.text || ""));
+  return (block.rows || []).map((row) => row.cells.map((cell) => cell.editableText ?? cell.text ?? ""));
 }
 
 function createEditableTable(matrix, className, { onContextMenu } = {}) {
@@ -5646,12 +6388,11 @@ function createTableBlockRow(block) {
           sourceHash: block.sourceHash,
           startLine: block.startLine,
           englishRows: readEditableTable(englishShell.querySelector("table")),
-          deferCompile: state.project?.config?.autoCompile !== true
+          deferCompile: true
         })
       });
       state.currentDocument = result.document;
       renderSegments();
-      scheduleFastPreview(result.document.file, 0);
       updateBuild(result.build);
       toast("表格已保存。", "success");
     } catch (error) {
@@ -5704,7 +6445,6 @@ async function submitNewParagraph(event) {
     state.currentDocument = result.document;
     closeParagraphDialog();
     renderSegments();
-    scheduleFastPreview(result.document.file, 0);
     updateBuild(result.build);
     invalidateReferences();
     scheduleProjectRefresh();
@@ -6010,8 +6750,6 @@ function applyFigureInsertionResult(result) {
     state.currentDocument = result.document;
     renderSegments();
   }
-  const previewFile = result.document?.file || result.source?.file || state.currentFile || state.sourceFile;
-  if (previewFile?.toLowerCase().endsWith(".tex")) scheduleFastPreview(previewFile, 0);
   updateBuild(result.build);
   invalidateReferences();
   scheduleProjectRefresh();
@@ -6050,7 +6788,7 @@ async function submitFigureInsertion(event) {
           anchor,
           kind: state.structureType,
           latex,
-          deferCompile: state.project?.config?.autoCompile !== true
+          deferCompile: true
         })
       });
       closeFigureDialog();
@@ -6082,7 +6820,7 @@ async function submitFigureInsertion(event) {
         caption: elements.figureCaptionInput.value.trim(),
         label: elements.figureLabelInput.value.trim(),
         layout: figureLayoutOptions(),
-        deferCompile: state.project?.config?.autoCompile !== true
+        deferCompile: true
       })
     });
     closeFigureDialog();
@@ -6163,52 +6901,23 @@ async function handleExternalFigureFiles() {
 }
 
 function renderTranslationSections(documentPayload) {
-  const sections = [];
-  const seen = new Set();
-  for (const segment of documentPayload.segments) {
-    const id = segment.sectionId || `${documentPayload.file}:section:0`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    sections.push({ id, index: segment.sectionIndex || 0, title: segment.sectionTitle || "" });
-  }
-  elements.translationSectionSelect.replaceChildren();
-  if (!sections.length) {
-    const option = document.createElement("option");
-    option.textContent = "无可翻译段落";
-    elements.translationSectionSelect.append(option);
-    elements.translationSectionSelect.disabled = true;
-    state.currentSectionId = null;
-    return sections;
-  }
-  const selected = sections.some((section) => section.id === state.currentSectionId)
-    ? state.currentSectionId
-    : sections[0].id;
-  for (const section of sections) {
-    const option = document.createElement("option");
-    option.value = section.id;
-    option.textContent = section.title
-      ? `第 ${section.index} 节 · ${section.title}`
-      : sections.length > 1 ? "前置内容" : "当前文件";
-    elements.translationSectionSelect.append(option);
-  }
-  state.currentSectionId = selected;
-  elements.translationSectionSelect.value = selected;
-  elements.translationSectionSelect.disabled = sections.length === 1;
+  const sections = summarizeTranslationSections(documentPayload.segments);
+  const documents = [...(state.project?.documents || [])];
+  const current = documents.find((item) => item.file === documentPayload.file);
+  if (current) current.sections = sections;
+  else documents.push({ file: documentPayload.file, sections });
+  if (!sections.some((section) => section.id === state.currentSectionId)) state.currentSectionId = sections[0]?.id || null;
+
   return sections;
 }
 
 function updateTranslateSectionButton() {
-  if (!elements.translateSectionButton) return;
-  const sectionId = state.currentSectionId;
-  const segments = state.currentDocument?.segments || [];
-  const fallback = `${state.currentDocument?.file || ""}:section:0`;
-  elements.translateSectionButton.disabled = !sectionId || !segments.some((segment) => (segment.sectionId || fallback) === sectionId);
+  updateTranslationDirection();
 }
 
 function translateCurrentSection() {
   if (!state.currentDocument || !state.currentSectionId) return;
-  const fallback = `${state.currentDocument.file}:section:0`;
-  const segments = state.currentDocument.segments.filter((segment) => (segment.sectionId || fallback) === state.currentSectionId);
+  const segments = state.currentDocument.segments.filter((segment) => belongsToTranslationSection(segment, state.currentSectionId));
   let queued = 0;
   let missingChinese = 0;
   for (const segment of segments) {
@@ -6238,6 +6947,12 @@ function translateCurrentSection() {
 
 function renderSegments() {
   const documentPayload = state.currentDocument;
+  const summary = state.project?.documents?.find((item) => item.file === documentPayload.file);
+  if (summary) {
+    summary.segments = documentPayload.segments.length;
+    summary.translated = documentPayload.segments.filter((segment) => segment.chinese).length;
+    summary.stale = documentPayload.segments.filter((segment) => ["english-changed", "pending"].includes(segment.translationStatus)).length;
+  }
   const sections = renderTranslationSections(documentPayload);
   const mathBlocks = documentPayload.mathBlocks || [];
   const tableBlocks = documentPayload.tableBlocks || [];
@@ -6251,6 +6966,7 @@ function renderSegments() {
   ));
   elements.currentFile.textContent = fileLabel(documentPayload.file);
   elements.fileMeta.textContent = `${documentPayload.segments.length} 段 · ${mathBlocks.length} 公式 · ${tableBlocks.length} 表格 · ${sections.length} 节`;
+  elements.currentFile.title = elements.currentFile.textContent + " · " + elements.fileMeta.textContent;
   elements.segmentList.replaceChildren();
   if (!items.length) {
     const empty = document.createElement("div");
@@ -6270,23 +6986,24 @@ function renderSegments() {
       for (const heading of headingPath.slice(commonLength)) {
         const node = document.createElement("div");
         node.className = `segment-heading level-${heading.level}`;
-        const kind = document.createElement("span");
-        kind.className = "segment-heading-kind";
-        kind.textContent = heading.level === 1 ? "章节" : heading.level === 2 ? "小节" : "三级标题";
         const title = document.createElement("strong");
         title.className = "segment-heading-title";
         title.textContent = heading.title;
         const line = document.createElement("span");
         line.className = "segment-heading-line";
         line.textContent = `L${heading.line}`;
-        node.append(kind, title, line);
+        node.append(title, line);
         elements.segmentList.append(node);
       }
-      elements.segmentList.append(
-        entry.type === "segment"
-          ? createSegmentRow(entry.item)
-          : entry.type === "math" ? createMathBlockRow(entry.item) : createTableBlockRow(entry.item)
-      );
+      const row = entry.type === "segment"
+        ? createSegmentRow(entry.item)
+        : entry.type === "math" ? createMathBlockRow(entry.item) : createTableBlockRow(entry.item);
+      row.dataset.startLine = entry.item.startLine;
+      row.dataset.endLine = entry.item.endLine;
+      if (entry.type === "table") row.addEventListener("click", (event) => {
+        if (!event.target.closest(".segment-actions, textarea, button")) void locateTranslationBlock(row);
+      });
+      elements.segmentList.append(row);
       previousHeadingPath = headingPath;
     }
   }
@@ -6295,28 +7012,35 @@ function renderSegments() {
   renderSectionList();
   updateTranslateFileButton();
   updateTranslateSectionButton();
+  reviewCenter?.decorateRows(elements.segmentList);
   refreshIcons();
 }
 
 async function loadDocument(file) {
+  const token = ++state.documentLoadToken;
   state.currentFile = file;
   updateTopbarCurrentFile(file);
   state.currentDocument = null;
   state.currentSectionId = null;
+  elements.segmentList.classList.remove("missing-project-source");
   renderFileTranslationProgress(file);
   elements.segmentList.innerHTML = '<div class="empty-state">正在读取段落...</div>';
   try {
-    state.currentDocument = await api(`/api/document?file=${encodeURIComponent(file)}`);
+    const document = await api(`/api/document?file=${encodeURIComponent(file)}`);
+    if (token !== state.documentLoadToken) return false;
+    state.currentDocument = document;
     renderSegments();
-    if (state.previewMode === "fast") scheduleFastPreview(file, 0);
     if (state.mode === "source") {
       const loaded = await loadSourceFile(file);
       if (!loaded) renderSourceFileOptions(state.sourceFile);
     } else if (!state.sourceDirty) {
       renderSourceFileOptions(file);
     }
+    return true;
   } catch (error) {
+    if (token !== state.documentLoadToken) return false;
     toast(error.message, "error");
+    return false;
   }
 }
 
@@ -6327,19 +7051,29 @@ function ensureSourceSearchControls() {
   const search = document.createElement("div");
   search.className = "source-search";
   search.setAttribute("role", "search");
-  search.innerHTML = `
-    <i data-lucide="search"></i>
-    <input id="sourceSearchInput" type="search" autocomplete="off" aria-label="搜索当前源文件" placeholder="搜索当前文件" disabled>
-    <span id="sourceSearchCount" aria-live="polite">0 / 0</span>
-    <button class="icon-button small" id="sourceSearchPreviousButton" type="button" title="上一个匹配" disabled>
-      <i data-lucide="chevron-up"></i>
-    </button>
-    <button class="icon-button small" id="sourceSearchNextButton" type="button" title="下一个匹配" disabled>
-      <i data-lucide="chevron-down"></i>
-    </button>
-  `;
+  search.innerHTML = [
+    '<div class="source-search-row">',
+    '<i data-lucide="search"></i>',
+    '<input id="sourceSearchInput" type="search" autocomplete="off" aria-label="全局搜索 TeX 和 Markdown" placeholder="搜索整个项目" disabled>',
+    '<span id="sourceSearchCount" aria-live="polite">0 / 0</span>',
+    '<button class="icon-button small" id="sourceSearchPreviousButton" type="button" title="上一个匹配" disabled><i data-lucide="chevron-up"></i></button>',
+    '<button class="icon-button small" id="sourceSearchNextButton" type="button" title="下一个匹配" disabled><i data-lucide="chevron-down"></i></button>',
+    '</div>',
+    '<div class="source-replace-row hidden" id="sourceReplacePanel">',
+    '<i data-lucide="replace"></i>',
+    '<input id="sourceReplaceInput" type="text" autocomplete="off" aria-label="替换内容" placeholder="替换为">',
+    '<button class="button secondary" id="sourceSearchReplaceButton" type="button" title="替换当前匹配">替换</button>',
+    '<button class="button secondary" id="sourceSearchReplaceAllButton" type="button" title="替换整个项目中的所有匹配">全部替换</button>',
+    '</div>',
+    '<div class="source-search-results" id="sourceSearchResults" aria-live="polite"></div>'
+  ].join("");
   toolbar.append(search);
   elements.sourceSearchInput = search.querySelector("#sourceSearchInput");
+  elements.sourceReplaceInput = search.querySelector("#sourceReplaceInput");
+  elements.sourceReplacePanel = search.querySelector("#sourceReplacePanel");
+  elements.sourceSearchResults = search.querySelector("#sourceSearchResults");
+  elements.sourceSearchReplaceButton = search.querySelector("#sourceSearchReplaceButton");
+  elements.sourceSearchReplaceAllButton = search.querySelector("#sourceSearchReplaceAllButton");
   elements.sourceSearchCount = search.querySelector("#sourceSearchCount");
   elements.sourceSearchPreviousButton = search.querySelector("#sourceSearchPreviousButton");
   elements.sourceSearchNextButton = search.querySelector("#sourceSearchNextButton");
@@ -6360,17 +7094,68 @@ function isMarkdownFile(file = state.sourceFile) {
   return /\.(?:md|markdown)$/i.test(String(file || ""));
 }
 
-function latexSourceHighlightHtml(value) {
+function sourceHighlightDecorations(file, content) {
+  const normalizedFile = String(file || "").replaceAll("\\", "/");
+  const sourceLength = String(content || "").length;
+  const decorations = [];
+  for (const item of reviewCenter?.all() || []) {
+    if (item.anchor?.file !== state.sourceFile) continue;
+    const start = Math.max(0, Math.min(sourceLength, item.anchor.start || 0));
+    const end = Math.max(start, Math.min(sourceLength, item.anchor.end || 0));
+    if (end > start) decorations.push({ start, end, className: "source-annotation", title: "批注 · " + (item.text || item.quote) });
+  }
+  for (const match of state.sourceSearchMatches || []) {
+    if (match.file !== normalizedFile) continue;
+    const start = Math.max(0, Math.min(sourceLength, Number(match.start) || 0));
+    const end = Math.max(start, Math.min(sourceLength, Number(match.end) || 0));
+    if (end > start) decorations.push({ start, end, className: "source-search-match", title: "搜索匹配" });
+  }
+  return decorations.sort((left, right) => left.start - right.start || right.end - left.end);
+}
+
+function sourceDecorateToken(className, token, offset, decorations) {
+  const source = String(token || "");
+  if (!source || !decorations.length) {
+    const escaped = sourceSyntaxEscape(source);
+    return className ? '<span class="' + className + '">' + escaped + '</span>' : escaped;
+  }
+  const boundaries = new Set([0, source.length]);
+  for (const decoration of decorations) {
+    if (decoration.end <= offset || decoration.start >= offset + source.length) continue;
+    boundaries.add(Math.max(0, decoration.start - offset));
+    boundaries.add(Math.min(source.length, decoration.end - offset));
+  }
+  const points = [...boundaries].sort((left, right) => left - right);
+  return points.slice(0, -1).map((start, index) => {
+    const end = points[index + 1];
+    const part = source.slice(start, end);
+    const escaped = sourceSyntaxEscape(part);
+    const syntax = className ? '<span class="' + className + '">' + escaped + '</span>' : escaped;
+    const decoration = decorations.find((candidate) => candidate.start <= offset + start && candidate.end >= offset + end);
+    if (!decoration) return syntax;
+    const title = sourceSyntaxEscape(decoration.title).replaceAll("\"", "&quot;");
+    return '<mark class="' + decoration.className + '" title="' + title + '">' + syntax + '</mark>';
+  }).join("");
+}
+
+function latexSourceHighlightHtml(value, decorations = sourceHighlightDecorations(state.sourceFile, value)) {
   const source = String(value || "").replace(/\r\n/g, "\n");
   let html = "";
   let cursor = 0;
   let mathMarker = "";
   const append = (className, token) => {
-    const escaped = sourceSyntaxEscape(token);
-    html += className ? `<span class="${className}">${escaped}</span>` : escaped;
+    html += sourceDecorateToken(className, token, cursor, decorations);
   };
   while (cursor < source.length) {
     const char = source[cursor];
+    if (char === "\\" && !fastPreviewIsEscaped(source, cursor)) {
+      const citation = CITATION_SOURCE_TOKEN.exec(source.slice(cursor));
+      if (citation) {
+        append("syntax-citation", citation[0]);
+        cursor += citation[0].length;
+        continue;
+      }
+    }
     if (char === "%" && !fastPreviewIsEscaped(source, cursor)) {
       const end = source.indexOf("\n", cursor);
       const commentEnd = end < 0 ? source.length : end;
@@ -6428,29 +7213,52 @@ function latexSourceHighlightHtml(value) {
 
 function markdownSourceHighlightHtml(value) {
   let fenced = false;
-  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  const source = String(value || "").replace(/\r\n/g, "\n");
+  const decorations = sourceHighlightDecorations(state.sourceFile, source);
+  let offset = 0;
+  const lines = source.split("\n");
   const html = lines.map((line) => {
-    const escaped = sourceSyntaxEscape(line);
+    const lineHtml = (className) => sourceDecorateToken(className, line, offset, decorations);
+    offset += line.length + 1;
     if (/^\s*(```|~~~)/.test(line)) {
       fenced = !fenced;
-      return `<span class="syntax-markdown-code">${escaped}</span>`;
+      return lineHtml("syntax-markdown-code");
     }
-    if (fenced) return `<span class="syntax-markdown-code">${escaped}</span>`;
-    if (/^\s{0,3}#{1,6}\s+/.test(line)) return `<span class="syntax-markdown-heading">${escaped}</span>`;
-    if (/^\s*>/.test(line)) return `<span class="syntax-markdown-quote">${escaped}</span>`;
-    if (/^\s*(?:[-+*]|\d+\.)\s+/.test(line)) return `<span class="syntax-markdown-list">${escaped}</span>`;
-    if (/^\s*\|.*\|\s*$/.test(line)) return `<span class="syntax-markdown-table">${escaped}</span>`;
-    return escaped;
+    if (fenced) return lineHtml("syntax-markdown-code");
+    if (/^\s{0,3}#{1,6}\s+/.test(line)) return lineHtml("syntax-markdown-heading");
+    if (/^\s*>/.test(line)) return lineHtml("syntax-markdown-quote");
+    if (/^\s*(?:[-+*]|\d+\.)\s+/.test(line)) return lineHtml("syntax-markdown-list");
+    if (/^\s*\|.*\|\s*$/.test(line)) return lineHtml("syntax-markdown-table");
+    return lineHtml("");
   }).join("\n");
-  return `${html}\u200b`;
+  return html + "\u200b";
 }
 
 function updateSourceSyntaxHighlight() {
   const code = elements.sourceHighlightLayer?.querySelector("code");
   if (!code) return;
-  code.innerHTML = isMarkdownFile()
+  const html = isMarkdownFile()
     ? markdownSourceHighlightHtml(elements.sourceEditor.value)
     : latexSourceHighlightHtml(elements.sourceEditor.value);
+  if (code.sourceHtml === html) return;
+  code.sourceHtml = html;
+  // Keep unchanged syntax nodes so one character edit does not relayout the full layer.
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const previous = [...code.childNodes];
+  const next = [...template.content.childNodes];
+  let start = 0;
+  while (start < previous.length && start < next.length && previous[start].isEqualNode(next[start])) start += 1;
+  let previousEnd = previous.length - 1;
+  let nextEnd = next.length - 1;
+  while (previousEnd >= start && nextEnd >= start && previous[previousEnd].isEqualNode(next[nextEnd])) {
+    previousEnd -= 1;
+    nextEnd -= 1;
+  }
+  const replacement = document.createDocumentFragment();
+  for (let index = start; index <= nextEnd; index += 1) replacement.append(next[index]);
+  for (let index = start; index <= previousEnd; index += 1) previous[index].remove();
+  code.insertBefore(replacement, previous[previousEnd + 1] || null);
 }
 
 function syncSourceEditorLayers() {
@@ -6469,10 +7277,23 @@ function sourceCursorPosition() {
   };
 }
 
-function updateSourceLineNumbers() {
+function updateSourceLineNumbers({ highlight = true } = {}) {
   const count = sourceLineCount();
-  elements.sourceLineNumbers.textContent = Array.from({ length: count }, (_value, index) => index + 1).join("\n");
-  updateSourceSyntaxHighlight();
+  if (elements.sourceLineNumbers.dataset.count !== String(count)) {
+    elements.sourceLineNumbers.dataset.count = String(count);
+    elements.sourceLineNumbers.textContent = Array.from({ length: count }, (_value, index) => index + 1).join("\n");
+  }
+  if (highlight) updateSourceSyntaxHighlight();
+}
+
+function scheduleSourceEditorRefresh() {
+  if (state.sourceEditorRefreshFrame) return;
+  state.sourceEditorRefreshFrame = window.requestAnimationFrame(() => {
+    state.sourceEditorRefreshFrame = 0;
+    updateSourceLineNumbers({ highlight: false });
+    void refreshSourceSearch({ keepIndex: true });
+    renderSectionList();
+  });
 }
 
 function toggleSourceLineComments() {
@@ -6523,6 +7344,11 @@ function shouldProtectSourceBoundaryBackspace(editor) {
 }
 
 function updateSourceStatus() {
+  if (state.sourceMissing) {
+    elements.sourceStatus.textContent = "磁盘文件已移除 · 未保存文字可复制";
+    elements.sourceStatus.title = state.sourceFile || "";
+    return;
+  }
   if (!state.sourceFile || elements.sourceEditor.disabled) return;
   const lines = sourceLineCount();
   const cursor = sourceCursorPosition();
@@ -6534,9 +7360,9 @@ function setSourceDirty(dirty) {
   state.sourceDirty = dirty;
   elements.sourceStatus.classList.toggle("clean", !dirty && Boolean(state.sourceFile));
   elements.sourceStatus.classList.toggle("dirty", dirty);
-  elements.sourceStatus.classList.remove("error");
-  elements.saveSourceButton.disabled = !dirty;
-  updateHeaderSaveState(dirty ? "dirty" : "saved");
+  elements.sourceStatus.classList.toggle("error", state.sourceMissing);
+  elements.saveSourceButton.disabled = !dirty || state.sourceMissing;
+  updateHeaderSaveState(state.sourceMissing ? "error" : dirty ? "dirty" : "saved");
   updateSourceStatus();
 }
 
@@ -6546,37 +7372,138 @@ function setSourceSearchEnabled(enabled) {
   const hasMatches = enabled && state.sourceSearchMatches.length > 0;
   elements.sourceSearchPreviousButton.disabled = !hasMatches;
   elements.sourceSearchNextButton.disabled = !hasMatches;
+  if (elements.sourceSearchReplaceButton) elements.sourceSearchReplaceButton.disabled = !hasMatches;
+  if (elements.sourceSearchReplaceAllButton) elements.sourceSearchReplaceAllButton.disabled = !hasMatches;
 }
 
-function refreshSourceSearch({ keepIndex = false } = {}) {
+function focusSourceSearch() {
+  if (!elements.sourceSearchInput || state.mode !== "source" || !state.sourceFile) return;
+  elements.sourceView.classList.add("search-open");
+  document.querySelector("#toggleSourceSearchButton").setAttribute("aria-expanded", "true");
+  elements.sourceSearchInput.disabled = false;
+  elements.sourceSearchInput.focus();
+  elements.sourceSearchInput.select();
+  refreshSourceSearch({ keepIndex: true });
+}
+
+function closeSourceSearch() {
+  elements.sourceView.classList.remove("search-open");
+  document.querySelector("#toggleSourceSearchButton").setAttribute("aria-expanded", "false");
+  elements.sourceEditor.focus();
+}
+
+function sourceSearchFiles() {
+  return (state.project?.sourceFiles || []).filter((file) => /\.(?:tex|md|markdown)$/i.test(String(file || "")));
+}
+
+function renderSourceSearchResults() {
+  if (!elements.sourceSearchResults) return;
+  elements.sourceSearchResults.replaceChildren();
+  const matches = state.sourceSearchMatches || [];
+  if (!matches.length) return;
+  const limit = Math.min(matches.length, 80);
+  for (let index = 0; index < limit; index += 1) {
+    const match = matches[index];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "source-search-result" + (index === state.sourceSearchIndex ? " active" : "");
+    const line = String(match.content || "").slice(0, match.start).split(/\r?\n/).length;
+    const lineText = String(match.content || "").split(/\r?\n/)[line - 1] || "";
+    button.textContent = match.file + ":" + line + "  " + lineText.trim();
+    button.title = button.textContent;
+    button.addEventListener("click", () => void selectSourceSearchMatch(index));
+    elements.sourceSearchResults.append(button);
+  }
+  if (matches.length > limit) {
+    const note = document.createElement("div");
+    note.className = "source-search-more";
+    note.textContent = "还有 " + (matches.length - limit) + " 个匹配";
+    elements.sourceSearchResults.append(note);
+  }
+}
+
+async function refreshSourceSearch({ keepIndex = false } = {}) {
   if (!elements.sourceSearchInput) return;
   const query = elements.sourceSearchInput.value;
+  const token = ++state.sourceSearchRequest;
   state.sourceSearchQuery = query;
   state.sourceSearchMatches = [];
   state.sourceSearchIndex = keepIndex ? state.sourceSearchIndex : -1;
+  renderSourceSearchResults();
   if (!query) {
     elements.sourceSearchCount.textContent = "0 / 0";
     setSourceSearchEnabled(Boolean(state.sourceFile));
+    updateSourceSyntaxHighlight();
     return;
   }
-  const text = elements.sourceEditor.value.toLowerCase();
+  if (state.sourceFile) {
+    state.sourceSearchContents.set(state.sourceFile, {
+      content: elements.sourceEditor.value,
+      sourceHash: state.sourceHash,
+      eol: state.sourceEol
+    });
+  }
+  const files = sourceSearchFiles();
+  const sources = await Promise.all(files.map(async (file) => {
+    const cached = state.sourceSearchContents.get(file);
+    if (cached) return { file, ...cached };
+    try {
+      const source = await api("/api/source?file=" + encodeURIComponent(file));
+      const entry = { content: source.content, sourceHash: source.sourceHash, eol: source.eol || String.fromCharCode(10) };
+      state.sourceSearchContents.set(file, entry);
+      return { file, ...entry };
+    } catch {
+      return null;
+    }
+  }));
+  if (token !== state.sourceSearchRequest) return;
   const needle = query.toLowerCase();
-  let position = 0;
-  while (needle && position <= text.length) {
-    const index = text.indexOf(needle, position);
-    if (index < 0) break;
-    state.sourceSearchMatches.push({ start: index, end: index + query.length });
-    position = index + Math.max(needle.length, 1);
+  for (const source of sources.filter(Boolean)) {
+    const content = String(source.content || "");
+    const lower = content.toLowerCase();
+    let position = 0;
+    while (needle && position <= lower.length) {
+      const index = lower.indexOf(needle, position);
+      if (index < 0) break;
+      state.sourceSearchMatches.push({ file: source.file, content, start: index, end: index + query.length });
+      position = index + Math.max(needle.length, 1);
+    }
   }
   if (state.sourceSearchMatches.length && state.sourceSearchIndex >= state.sourceSearchMatches.length) {
     state.sourceSearchIndex = state.sourceSearchMatches.length - 1;
   }
   const current = state.sourceSearchIndex >= 0 ? state.sourceSearchIndex + 1 : 0;
-  elements.sourceSearchCount.textContent = `${current} / ${state.sourceSearchMatches.length}`;
+  elements.sourceSearchCount.textContent = current + " / " + state.sourceSearchMatches.length;
   setSourceSearchEnabled(Boolean(state.sourceFile));
+  renderSourceSearchResults();
+  updateSourceSyntaxHighlight();
 }
 
-function selectSourceSearchMatch(index) {
+function scrollSourceOffsetIntoView(offset) {
+  const editor = elements.sourceEditor;
+  const style = getComputedStyle(editor);
+  const mirror = document.createElement("div");
+  for (const property of [
+    "font-family", "font-size", "font-style", "font-weight", "font-variant",
+    "letter-spacing", "line-height", "text-align", "text-indent", "text-transform",
+    "direction", "tab-size", "padding", "white-space", "overflow-wrap", "word-break"
+  ]) mirror.style.setProperty(property, style.getPropertyValue(property));
+  Object.assign(mirror.style, {
+    position: "fixed", top: "0", left: "0", visibility: "hidden",
+    pointerEvents: "none", boxSizing: "border-box", width: `${editor.clientWidth}px`
+  });
+  const marker = document.createElement("span");
+  marker.textContent = "\u200b";
+  mirror.append(document.createTextNode(editor.value.slice(0, offset)), marker,
+    document.createTextNode(editor.value.slice(offset)));
+  document.body.append(mirror);
+  const targetTop = marker.getBoundingClientRect().top - mirror.getBoundingClientRect().top;
+  mirror.remove();
+  editor.scrollTop = Math.max(0, targetTop - editor.clientHeight * 0.28);
+  syncSourceEditorLayers();
+}
+
+async function selectSourceSearchMatch(index) {
   const matches = state.sourceSearchMatches;
   if (!matches.length) {
     elements.sourceSearchCount.textContent = "0 / 0";
@@ -6585,37 +7512,127 @@ function selectSourceSearchMatch(index) {
   }
   state.sourceSearchIndex = (index + matches.length) % matches.length;
   const match = matches[state.sourceSearchIndex];
+  if (state.sourceFile !== match.file) {
+    const loaded = await loadSourceFile(match.file);
+    if (!loaded) return;
+  }
   elements.sourceEditor.focus();
   elements.sourceEditor.setSelectionRange(match.start, match.end);
-  const lineHeight = Number.parseFloat(getComputedStyle(elements.sourceEditor).lineHeight) || 20;
-  const line = elements.sourceEditor.value.slice(0, match.start).split(/\r?\n/).length;
-  elements.sourceEditor.scrollTop = Math.max(0, (line - 4) * lineHeight);
-  syncSourceEditorLayers();
-  elements.sourceSearchCount.textContent = `${state.sourceSearchIndex + 1} / ${matches.length}`;
+  scrollSourceOffsetIntoView(match.start);
+  elements.sourceSearchCount.textContent = (state.sourceSearchIndex + 1) + " / " + matches.length;
   flashSourceSelection();
   updateSourceStatus();
+  renderSourceSearchResults();
 }
 
-function moveSourceSearch(direction) {
+async function moveSourceSearch(direction) {
   if (!elements.sourceSearchInput.value) {
     elements.sourceSearchInput.focus();
     return;
   }
-  if (elements.sourceSearchInput.value !== state.sourceSearchQuery) refreshSourceSearch();
+  if (elements.sourceSearchInput.value !== state.sourceSearchQuery) await refreshSourceSearch();
   const nextIndex = state.sourceSearchIndex < 0 ? 0 : state.sourceSearchIndex + direction;
-  selectSourceSearchMatch(nextIndex);
+  await selectSourceSearchMatch(nextIndex);
 }
 
-function focusSourceSearch() {
-  if (!elements.sourceSearchInput || state.mode !== "source" || !state.sourceFile) return;
-  elements.sourceSearchInput.disabled = false;
-  elements.sourceSearchInput.focus();
-  elements.sourceSearchInput.select();
-  refreshSourceSearch({ keepIndex: true });
+function focusSourceReplace() {
+  if (!elements.sourceReplaceInput || state.mode !== "source") return;
+  focusSourceSearch();
+  elements.sourceReplacePanel?.classList.remove("hidden");
+  elements.sourceReplaceInput.focus();
+  elements.sourceReplaceInput.select();
+}
+
+function replaceAllText(value, query, replacement) {
+  const source = String(value || "");
+  const needle = String(query || "").toLowerCase();
+  if (!needle) return source;
+  const lower = source.toLowerCase();
+  let result = "";
+  let position = 0;
+  while (position <= lower.length) {
+    const index = lower.indexOf(needle, position);
+    if (index < 0) return result + source.slice(position);
+    result += source.slice(position, index) + replacement;
+    position = index + needle.length;
+  }
+  return result;
+}
+
+async function replaceCurrentSourceMatch() {
+  const match = state.sourceSearchMatches[state.sourceSearchIndex];
+  if (!match) return;
+  await selectSourceSearchMatch(state.sourceSearchIndex);
+  const replacement = elements.sourceReplaceInput?.value || "";
+  elements.sourceEditor.setRangeText(replacement, match.start, match.end, "select");
+  elements.sourceEditor.dispatchEvent(new Event("input", { bubbles: true }));
+  await refreshSourceSearch({ keepIndex: true });
+}
+
+async function replaceAllSourceMatches() {
+  const query = elements.sourceSearchInput?.value || "";
+  if (!query || !state.sourceSearchMatches.length) return;
+  const replacement = elements.sourceReplaceInput?.value || "";
+  setBusy(elements.sourceSearchReplaceAllButton, true);
+  try {
+    const files = [...new Set(state.sourceSearchMatches.map((match) => match.file))];
+    for (const file of files) {
+      const source = state.sourceSearchContents.get(file);
+      if (!source) continue;
+      const nextContent = replaceAllText(file === state.sourceFile ? elements.sourceEditor.value : source.content, query, replacement);
+      if (file === state.sourceFile && state.sourceDirty) {
+        elements.sourceEditor.value = nextContent;
+        elements.sourceEditor.dispatchEvent(new Event("input", { bubbles: true }));
+        continue;
+      }
+      const result = await api("/api/source", {
+        method: "POST",
+        body: JSON.stringify({
+          file,
+          content: nextContent,
+          sourceHash: source.sourceHash,
+          deferCompile: true,
+          refreshDocument: file.toLowerCase().endsWith(".tex")
+        })
+      });
+      state.sourceSearchContents.set(file, {
+        content: result.source.content,
+        sourceHash: result.source.sourceHash,
+        eol: result.source.eol || source.eol
+      });
+      if (file === state.sourceFile) await loadSourceFile(file, { force: true });
+    }
+    scheduleProjectRefresh(80);
+    await refreshSourceSearch({ keepIndex: false });
+    toast("已替换 " + files.length + " 个文件中的匹配内容。", "success");
+  } catch (error) {
+    toast(error.message, "error", 5200);
+  } finally {
+    setBusy(elements.sourceSearchReplaceAllButton, false);
+  }
 }
 
 function confirmDiscardSourceChanges() {
   return !state.sourceDirty || window.confirm("当前源码有未保存修改。放弃这些修改吗？");
+}
+
+function applySourceInlineFormat(kind, editor = elements.sourceEditor) {
+  if (!editor || editor.disabled || editor.readOnly) return;
+  const markdown = editor === elements.sourceEditor && isMarkdownFile();
+  const format = kind === "bold"
+    ? (markdown ? ["**", "**"] : ["\\textbf{", "}"])
+    : (markdown ? ["*", "*"] : ["\\textit{", "}"]);
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = editor.value.slice(start, end);
+  const replacement = format[0] + selected + format[1];
+  editor.focus({ preventScroll: true });
+  if (!document.execCommand("insertText", false, replacement)) {
+    editor.setRangeText(replacement, start, end, "end");
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  if (selected) editor.setSelectionRange(start, start + replacement.length);
+  if (!selected) editor.setSelectionRange(start + format[0].length, start + format[0].length);
 }
 
 function applySourceFileKind(file = state.sourceFile) {
@@ -6643,6 +7660,14 @@ function renderSourceFileOptions(preferredFile = "") {
   if (!preferred && files.includes(state.project?.config?.mainTex)) preferred = state.project.config.mainTex;
   if (!preferred) preferred = files[0];
   elements.sourceFileSelect.replaceChildren();
+  if (state.sourceMissing && state.sourceFile && !files.includes(state.sourceFile)) {
+    const removed = document.createElement("option");
+    removed.value = state.sourceFile;
+    removed.textContent = `${state.sourceFile}（已从磁盘移除）`;
+    removed.disabled = true;
+    elements.sourceFileSelect.append(removed);
+    preferred = state.sourceFile;
+  }
   for (const file of files) {
     const option = document.createElement("option");
     option.value = file;
@@ -6654,12 +7679,13 @@ function renderSourceFileOptions(preferredFile = "") {
     elements.sourceFileSelect.append(option);
   }
   elements.sourceFileSelect.disabled = files.length === 0;
-  elements.sourceEditor.disabled = files.length === 0;
+  elements.sourceEditor.disabled = !state.sourceMissing && files.length === 0;
   elements.sourceFileSelect.value = preferred || "";
   setSourceSearchEnabled(files.length > 0);
-  if (!files.length) {
+  if (!files.length && !state.sourceMissing) {
     applySourceFileKind("");
     elements.sourceEditor.value = "";
+    elements.sourceLineNumbers.dataset.count = "1";
     elements.sourceLineNumbers.textContent = "1";
     state.sourceSearchMatches = [];
     state.sourceSearchIndex = -1;
@@ -6689,18 +7715,25 @@ async function loadSourceFile(file, { force = false } = {}) {
     state.sourceHash = source.sourceHash;
     state.sourceEol = source.eol || "\n";
     state.sourceDirty = false;
+    state.sourceMissing = false;
     elements.sourceFileSelect.value = source.file;
     elements.sourceEditor.value = source.content;
     state.sourceSavedContent = elements.sourceEditor.value;
+    state.sourceSearchContents.set(source.file, {
+      content: source.content,
+      sourceHash: source.sourceHash,
+      eol: state.sourceEol
+    });
     elements.sourceEditor.disabled = false;
     applySourceFileKind(source.file);
+    state.reviewSelection = null;
     updateTopbarCurrentFile(source.file);
+    updateModeButtons();
+    renderReviewSourceGutter();
     updateSourceLineNumbers();
-    setSourceDirty(false);
+    setSourceDirty(elements.sourceEditor.value !== state.sourceSavedContent);
+    renderSectionList();
     refreshSourceSearch();
-    if (isMarkdownFile(source.file)) scheduleMarkdownPreview(source.file, 0);
-    else if (source.file.toLowerCase().endsWith(".tex")) scheduleFastPreview(source.file, 0);
-    else if (state.previewMode === "markdown") scheduleFastPreview(state.currentDocument?.file || state.currentFile || "", 0);
     return true;
   } catch (error) {
     elements.sourceStatus.classList.remove("clean", "dirty");
@@ -6734,6 +7767,10 @@ async function refreshLoadedSourceFromDisk(file) {
 
 function scheduleSourceAutosave(delay = 850) {
   window.clearTimeout(state.sourceAutosaveTimer);
+  if (state.sourceMissing) {
+    state.sourceAutosaveTimer = 0;
+    return;
+  }
   state.sourceAutosaveTimer = window.setTimeout(() => {
     state.sourceAutosaveTimer = 0;
     void saveSourceFile({ quiet: true, automatic: true });
@@ -6744,6 +7781,10 @@ async function saveSourceFile(options = {}) {
   const deferCompile = options.deferCompile ?? true;
   const quiet = options.quiet === true;
   if (!state.sourceFile || !state.sourceDirty) return true;
+  if (state.sourceMissing) {
+    if (!quiet) toast("无法保存已从项目移除的源码。可先复制编辑区中的文字。", "warning");
+    return false;
+  }
   if (state.sourceSaveInFlight) {
     state.sourceSavePending = true;
     return false;
@@ -6780,10 +7821,7 @@ async function saveSourceFile(options = {}) {
       state.sourceSavedContent = requestedContent;
       state.sourceDirty = elements.sourceEditor.value !== requestedContent;
     }
-    if (options.refreshPreview !== false) {
-      if (isMarkdownFile(requestedFile)) scheduleMarkdownPreview(requestedFile, 0);
-      else scheduleFastPreview(previewFileAfterSourceChange(requestedFile), 0);
-    }
+
     updateBuild(result.build);
     const savedFile = result.source.file;
     if (result.project) state.project = result.project;
@@ -7008,9 +8046,9 @@ function renderStructurePreview(preview) {
     elements.structureFileList.append(row);
   }
   elements.structureWarning.textContent = canMigrateBibliography
-    ? "迁移会保留全部引用键和原始文献文本；迁移或编译失败时自动恢复，不会留下不完整的 Bib 文件。"
+    ? "迁移会保留全部引用键和原始文献文本，写入失败时自动恢复。完成后请点击“编译全文”更新 PDF。"
     : preview.eligible
-      ? "拆分不会改写正文、公式、图片、表格或 Bib 条目；编译失败时自动恢复。"
+      ? "拆分会保留正文、公式、图片、表格和 Bib 条目，写入失败时自动恢复。完成后请点击“编译全文”更新 PDF。"
       : preview.reason;
   elements.structureWarning.classList.toggle("hidden", !elements.structureWarning.textContent);
   elements.structureWarning.classList.toggle("error", !preview.eligible && !canMigrateBibliography);
@@ -7094,7 +8132,19 @@ async function applyPaperStructure(event) {
   }
 }
 
-async function compilePaper() {
+async function compileOpenedProject() {
+  if (!state.compileOnOpenPending || state.project?.setupRequired || !state.project?.config?.mainTex || state.compileInFlight) return;
+  state.compileOnOpenPending = false;
+  await compilePaper({ quiet: true });
+}
+
+async function compilePaper({ quiet = false } = {}) {
+  if (state.compileInFlight) return;
+  if (state.project?.mainTexMissing) {
+    if (!quiet) toast("请先在设置中选择现有的主 TeX 文件。", "warning");
+    return;
+  }
+  while (state.sourceSaveInFlight) await new Promise((resolve) => window.setTimeout(resolve, 50));
   if (state.sourceDirty) {
     const saved = await saveSourceFile({ deferCompile: true, quiet: true, refreshPreview: false });
     if (!saved) return;
@@ -7104,19 +8154,15 @@ async function compilePaper() {
   const previousPreviewAvailable = state.buildPreviewAvailable;
   const previousBuild = state.project?.lastBuild || null;
   state.compileInFlight = true;
+  updateTranslationBuildLabel();
   renderCompileProgress();
   try {
     const build = await api("/api/compile", { method: "POST", body: "{}" });
     state.compileInFlight = false;
     updateBuild(build);
+    invalidateReferences();
     await refreshProject();
-    const warningCount = build.warnings?.length || 0;
-    if (build.success) {
-      toast(
-        warningCount ? `英文 PDF 已生成，包含 ${warningCount} 条编译警告。` : "英文 PDF 已重新编译。",
-        "success"
-      );
-    }
+    if ((build.success || build.previewAvailable) && !quiet) toast("英文 PDF 已重新编译。", "success");
   } catch (error) {
     state.compileInFlight = false;
     state.buildPreviewAvailable = previousPreviewAvailable;
@@ -7125,7 +8171,9 @@ async function compilePaper() {
     toast(error.message, "error");
   } finally {
     state.compileInFlight = false;
+    updateTranslationBuildLabel();
     buttons.forEach((button) => setBusy(button, false));
+    if (state.compileOnOpenPending) void compileOpenedProject();
   }
 }
 
@@ -7163,7 +8211,6 @@ async function pullPaper() {
     });
     if (result.project) await applyProjectPayload(result.project, { preserveDocument: false });
     else await refreshProject({ preserveDocument: false });
-    await compilePaper();
     toast(`已从 ${remoteLabel} 拉取最新版本。`, "success");
   } catch (error) {
     if (await resolveGitSyncConflictFromError(error, "pull")) return;
@@ -7520,6 +8567,8 @@ async function exportPdf() {
 }
 
 function updateModeButtons() {
+  const bilingual = document.querySelector('#fileEditorModes [data-mode="edit"]');
+  bilingual.disabled = state.mode === "source" && (!/\.tex$/i.test(state.sourceFile || "") || !elements.projectFilePreview.classList.contains("hidden"));
   document.querySelectorAll(".mode-button").forEach((button) => {
     const active = button.dataset.mode === "references"
       ? state.referencesOpen
@@ -7530,13 +8579,14 @@ function updateModeButtons() {
 }
 
 function setReferencesOpen(open) {
+  const anchor = state.pdfDocument ? capturePdfViewportAnchor() : null;
   state.referencesOpen = Boolean(open);
   if (state.referencesOpen) setSourceFocus(false);
   elements.workspace.classList.toggle("references-open", state.referencesOpen);
   elements.referencesView.classList.toggle("hidden", !state.referencesOpen);
-  elements.previewPanel.classList.toggle("hidden", state.referencesOpen);
   updateModeButtons();
   if (state.referencesOpen) void loadReferences();
+  schedulePdfPanelResize(anchor);
   return true;
 }
 
@@ -7552,9 +8602,11 @@ function setSourceFocus(focused) {
   refreshIcons();
 }
 
-function setMode(mode, { loadCurrent = true } = {}) {
+function setMode(mode, { loadCurrent = true, keepReferences = true } = {}) {
+  const translationFile = state.mode === "source" && /\.tex$/i.test(state.sourceFile || "")
+    ? state.sourceFile : state.currentFile || state.project?.texFiles?.[0];
   if (mode === "references") return setReferencesOpen(!state.referencesOpen);
-  if (state.referencesOpen) setReferencesOpen(false);
+  if (state.referencesOpen && !keepReferences) setReferencesOpen(false);
   if (state.mode === "source" && mode !== "source" && state.sourceDirty) {
     if (!confirmDiscardSourceChanges()) return false;
     elements.sourceEditor.value = state.sourceSavedContent;
@@ -7562,6 +8614,10 @@ function setMode(mode, { loadCurrent = true } = {}) {
     setSourceDirty(false);
   }
   state.mode = mode;
+  elements.workspace.dataset.mode = mode;
+  translationLayout();
+  document.querySelector(mode === "edit" ? "#translationModeSlot" : "#sourceModeSlot").prepend(document.querySelector("#fileEditorModes"));
+  state.reviewSelection = null;
   if (mode !== "source") setSourceFocus(false);
   updateModeButtons();
   elements.editView.classList.toggle("hidden", mode !== "edit");
@@ -7570,7 +8626,7 @@ function setMode(mode, { loadCurrent = true } = {}) {
     renderSourceFileOptions(loadCurrent ? state.currentFile : state.sourceFile);
     if (loadCurrent) void loadSourceFile(elements.sourceFileSelect.value, { force: true });
   }
-  if (mode === "edit" && state.currentFile && loadCurrent) void loadDocument(state.currentFile);
+  if (mode === "edit" && translationFile && loadCurrent) void loadDocument(translationFile);
   return true;
 }
 
@@ -7662,7 +8718,6 @@ function openSettings() {
     option.value = file;
     mainTexCandidates.append(option);
   }
-  document.querySelector("#autoCompileInput").checked = config.autoCompile;
   document.querySelectorAll(".provider-grid").forEach((container) => {
     const prefix = container.dataset.provider;
     container.innerHTML = providerMarkup(prefix);
@@ -7780,7 +8835,7 @@ async function saveSettings({ close = true } = {}) {
   const next = await api("/api/config", {
     method: "POST",
     body: JSON.stringify({
-      autoCompile: document.querySelector("#autoCompileInput").checked,
+      autoCompile: false,
       overleafToken: document.querySelector("#overleafTokenInput").value.trim(),
       gitUsername: document.querySelector("#gitUsernameInput").value.trim(),
       gitToken: document.querySelector("#gitTokenInput").value.trim(),
@@ -7822,6 +8877,31 @@ async function testProvider(purpose, button) {
 
 function bindEvents() {
   ensureSourceSearchControls();
+  document.querySelectorAll("[data-sidebar-panel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = button.dataset.sidebarPanel;
+      const closing = !state.referencesOpen && state.sidebarPanel === panel;
+      setSourceFocus(false);
+      setSidebarPanel(closing ? "" : panel);
+    });
+  });
+  document.querySelector("#closeSidebarButton").addEventListener("click", () => {
+    document.querySelector(`[data-sidebar-panel="${state.sidebarPanel}"]`)?.focus();
+    setSidebarPanel("");
+  });
+  document.querySelectorAll('input[name="bilingualLayout"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) chooseTranslationLayout(input.value === "horizontal" ? "wide" : "compare");
+    });
+  });
+  document.querySelector("#closeSettingsButton").addEventListener("click", () => elements.settingsDialog.close());
+  document.querySelector("#toggleSourceSearchButton").addEventListener("click", () => {
+    if (elements.sourceView.classList.contains("search-open")) closeSourceSearch();
+    else focusSourceSearch();
+  });
+  document.querySelectorAll("#syncPopover button").forEach((button) => {
+    button.addEventListener("click", () => document.querySelector("#syncPopover").hidePopover());
+  });
   elements.undoButton.addEventListener("click", () => void undoLastChange());
   document.querySelector("#compileButton").addEventListener("click", compilePaper);
   elements.previewCompileButton.addEventListener("click", compilePaper);
@@ -7842,8 +8922,27 @@ function bindEvents() {
   });
   document.querySelector("#pullButton").addEventListener("click", pullPaper);
   document.querySelector("#pushButton").addEventListener("click", pushPaper);
-  document.querySelector("#translateFileButton").addEventListener("click", translateCurrentFile);
-  elements.translateSectionButton.addEventListener("click", translateCurrentSection);
+  for (const [button, direction] of [[elements.translateSectionButton, "en"], [document.querySelector("#translateFileButton"), "zh"]]) {
+    button.addEventListener("click", () => {
+      state.translationDirection = direction;
+      localStorage.setItem("paperBridge.translationDirection", direction);
+      updateTranslationDirection();
+    });
+  }
+  document.querySelector("#translateScopeButton").addEventListener("click", () => {
+    if (state.translationDirection === "zh") void translateCurrentFile();
+    else translateCurrentSection();
+  });
+  document.querySelectorAll("button[data-translation-layout]").forEach((button) => {
+    button.addEventListener("click", () => chooseTranslationLayout(button.dataset.translationLayout));
+  });
+  document.querySelector("#translationExpandButton").addEventListener("click", () => setTranslationExpanded(!state.translationExpanded));
+  for (const name of ["Size", "Leading", "Width", "Font"]) {
+    document.querySelector("#translationReading" + name).addEventListener("change", (event) => {
+      localStorage.setItem("paperBridge.translationReading" + name, event.currentTarget.value);
+      applyReadingSettings();
+    });
+  }
   elements.terminologyButton.addEventListener("click", openTerminologyDialog);
   document.querySelector("#closeTerminologyButton").addEventListener("click", closeTerminologyDialog);
   document.querySelector("#cancelTerminologyButton").addEventListener("click", closeTerminologyDialog);
@@ -7861,44 +8960,40 @@ function bindEvents() {
   elements.saveTerminologyButton.addEventListener("click", saveTerminology);
   elements.regenerateTerminologyButton.addEventListener("click", regenerateTerminology);
   elements.applyTerminologyDefinitionsButton.addEventListener("click", applyTerminologyDefinitions);
-  elements.referenceLookupButton.addEventListener("click", lookupNewReference);
-  elements.referenceAddForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (event.submitter?.id === "referenceLookupButton") void lookupNewReference();
-    else void addNewReference();
-  });
-  // DOI 可以是 10.xxxx/... 这种不是 URL 的纯文本；不要让旧版页面或 Electron
-  // 的原生 type=url 校验在 BibTeX 已经识别成功后再次拦截“加入 Bib 文件”。
-  elements.referenceAddForm.noValidate = true;
-  elements.referenceAddKey.addEventListener("input", () => {
-    const key = elements.referenceAddKey.value.trim();
-    if (!key || !elements.referenceAddBib.value.trim()) return;
-    elements.referenceAddBib.value = elements.referenceAddBib.value.replace(
-      /^(@[A-Za-z]+\s*[({]\s*)[^,\s]+(\s*,)/,
-      `$1${key}$2`
-    );
-  });
-  elements.closeReferenceAddButton.addEventListener("click", closeReferenceAddDialog);
-  elements.cancelReferenceAddButton.addEventListener("click", closeReferenceAddDialog);
-  elements.referenceAddDialog.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    closeReferenceAddDialog();
-  });
-  elements.referencesSearch.addEventListener("input", () => {
-    renderReferences();
-    window.clearTimeout(state.referenceSearchTimer);
-    state.referenceSearchTimer = window.setTimeout(() => {
-      maybeOpenReferenceAddDialogForSearch();
-    }, 450);
-  });
   elements.closeReferencesButton.addEventListener("click", () => setReferencesOpen(false));
-  elements.referenceInsertSearch.addEventListener("input", renderReferenceInsertList);
   document.querySelector("#closeReferenceInsertButton").addEventListener("click", closeReferenceInsertDialog);
   document.querySelector("#cancelReferenceInsertButton").addEventListener("click", closeReferenceInsertDialog);
   elements.referenceInsertDialog.addEventListener("cancel", () => closeCitationContextMenu());
   elements.referenceInsertForm.addEventListener("submit", (event) => event.preventDefault());
-  document.querySelector("#decreaseFontButton").addEventListener("click", () => changeEditorFont(-1));
-  document.querySelector("#increaseFontButton").addEventListener("click", () => changeEditorFont(1));
+  elements.sidebarResizeHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    elements.sidebarResizeHandle.setPointerCapture(event.pointerId);
+    document.body.classList.add("sidebar-resizing");
+    event.preventDefault();
+  });
+  elements.sidebarResizeHandle.addEventListener("pointermove", (event) => {
+    if (elements.sidebarResizeHandle.hasPointerCapture(event.pointerId)) resizeSidebar(event.clientX);
+  });
+  const finishSidebarResize = (event) => {
+    if (elements.sidebarResizeHandle.hasPointerCapture(event.pointerId)) elements.sidebarResizeHandle.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("sidebar-resizing");
+    applySidebarWidth();
+  };
+  elements.sidebarResizeHandle.addEventListener("pointerup", finishSidebarResize);
+  elements.sidebarResizeHandle.addEventListener("pointercancel", finishSidebarResize);
+  elements.sidebarResizeHandle.addEventListener("lostpointercapture", () => {
+    document.body.classList.remove("sidebar-resizing");
+  });
+  elements.sidebarResizeHandle.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) return;
+    event.preventDefault();
+    state.sidebarWidth = event.key === "Home" ? 160 : Math.min(480, Math.max(120, state.sidebarWidth + (event.key === "ArrowRight" ? 10 : -10)));
+    applySidebarWidth();
+  });
+  elements.sidebarResizeHandle.addEventListener("dblclick", () => {
+    state.sidebarWidth = 160;
+    applySidebarWidth();
+  });
   elements.workspaceSplitHandle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     elements.workspaceSplitHandle.setPointerCapture(event.pointerId);
@@ -7955,6 +9050,9 @@ function bindEvents() {
   });
   document.querySelector("#settingsButton").addEventListener("click", openSettings);
   document.querySelector("#addProjectButton").addEventListener("click", () => openSetup(state.project, { switching: true }));
+  elements.openProjectFolderButton.title = projectFolderActionLabel();
+  elements.openProjectFolderButton.setAttribute("aria-label", elements.openProjectFolderButton.title);
+  elements.openProjectFolderButton.addEventListener("click", () => void openProjectFolder(state.project?.config?.projectRoot));
   document.querySelector("#closeSetupButton").addEventListener("click", () => elements.setupDialog.close());
   document.querySelectorAll('input[name="setupSource"]').forEach((input) => input.addEventListener("change", updateSetupSource));
   document.querySelector("#setupConnectGit").addEventListener("change", updateOptionalGitFields);
@@ -8118,9 +9216,8 @@ function bindEvents() {
     finishGitConflictSelection(null);
   });
   document.querySelector("#refreshPdfButton").addEventListener("click", () => {
-    if (state.previewMode === "markdown") void renderMarkdownPreview(state.sourceFile);
-    else if (state.previewMode === "fast") void renderFastPreview(state.fastPreviewFile || state.currentDocument?.file || "");
-    else updatePdf();
+    state.pdfRenderKey = "";
+    updatePdf();
   });
   elements.exportPdfButton.addEventListener("click", exportPdf);
   document.querySelector("#previousPageButton").addEventListener("click", () => movePdfPage(-1));
@@ -8128,11 +9225,6 @@ function bindEvents() {
   document.querySelector("#zoomOutButton").addEventListener("click", () => setPdfZoom(state.pdfZoom - 10));
   document.querySelector("#zoomInButton").addEventListener("click", () => setPdfZoom(state.pdfZoom + 10));
   elements.pdfZoomValue.addEventListener("click", () => setPdfZoom(100));
-  elements.translationSectionSelect.addEventListener("change", (event) => {
-    state.currentSectionId = event.currentTarget.value;
-    renderFileTranslationProgress(state.currentFile);
-    updateTranslateSectionButton();
-  });
   elements.sourceFileSelect.addEventListener("change", async (event) => {
     const previous = state.sourceFile;
     const loaded = await loadSourceFile(event.currentTarget.value);
@@ -8144,15 +9236,11 @@ function bindEvents() {
     renderSectionList();
   });
   elements.sourceEditor.addEventListener("input", () => {
-    updateSourceLineNumbers();
     setSourceDirty(elements.sourceEditor.value !== state.sourceSavedContent);
-    refreshSourceSearch({ keepIndex: true });
-    renderSectionList();
+    scheduleSourceEditorRefresh();
     if (isMarkdownFile()) {
-      scheduleMarkdownPreview(state.sourceFile, 80);
       scheduleSourceAutosave();
     } else if (state.sourceFile?.toLowerCase().endsWith(".tex")) {
-      scheduleFastPreview(state.sourceFile, 160);
       scheduleSourceAutosave();
     }
   });
@@ -8163,9 +9251,12 @@ function bindEvents() {
   });
   elements.sourceEditor.addEventListener("scroll", () => {
     syncSourceEditorLayers();
+    syncReviewSourceScroll();
+    syncMarkdownPreviewToSource();
   }, { passive: true });
   attachCitationTarget(elements.sourceEditor);
   elements.sourceEditor.addEventListener("click", updateSourceStatus);
+  elements.sourceEditor.addEventListener("dblclick", () => void locateSourceSelection());
   elements.sourceEditor.addEventListener("keyup", updateSourceStatus);
   elements.sourceEditor.addEventListener("select", updateSourceStatus);
   elements.sourceEditor.addEventListener("keydown", (event) => {
@@ -8199,17 +9290,33 @@ function bindEvents() {
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      elements.sourceEditor.focus();
+      closeSourceSearch();
     }
   });
   elements.sourceSearchPreviousButton.addEventListener("click", () => moveSourceSearch(-1));
   elements.sourceSearchNextButton.addEventListener("click", () => moveSourceSearch(1));
+  elements.sourceSearchReplaceButton.addEventListener("click", () => void replaceCurrentSourceMatch());
+  elements.sourceSearchReplaceAllButton.addEventListener("click", () => void replaceAllSourceMatches());
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    if (key !== "b" && key !== "i") return;
+    const target = event.target instanceof Element ? event.target.closest("#sourceEditor, .segment-textarea.english, .editable-paper-table textarea, #insertTableGrid input") : null;
+    if (!target || target.disabled || target.readOnly) return;
+    event.preventDefault();
+    applySourceInlineFormat(key === "b" ? "bold" : "italic", target);
+  });
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || state.mode !== "source" || document.querySelector("dialog[open]")) return;
     const key = event.key.toLowerCase();
     if (key === "f" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       focusSourceSearch();
+      return;
+    }
+    if (key === "g" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      focusSourceReplace();
       return;
     }
     if (key === "s" && (event.ctrlKey || event.metaKey)) {
@@ -8249,14 +9356,25 @@ function bindEvents() {
   elements.migrateBibliographyButton.addEventListener("click", migrateBibliographyForStructure);
   document.querySelector("#closeStructureButton").addEventListener("click", () => elements.structureDialog.close());
   document.querySelector("#cancelStructureButton").addEventListener("click", () => elements.structureDialog.close());
-  elements.pdfScroll.addEventListener("pointerdown", beginPdfPan);
+  let pdfPress;
+  elements.pdfScroll.addEventListener("pointerdown", (event) => {
+    pdfPress = { x: event.clientX, y: event.clientY };
+    beginPdfPan(event);
+  });
+  elements.pdfScroll.addEventListener("click", (event) => {
+    if (state.mode !== "edit" || event.detail !== 1 || !pdfPress
+      || Math.hypot(pdfPress.x - event.clientX, pdfPress.y - event.clientY) > 5) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && elements.pdfScroll.contains(selection.anchorNode)) return;
+    void locatePdfSelection(event);
+  });
   elements.pdfScroll.addEventListener("pointermove", movePdfPan);
   elements.pdfScroll.addEventListener("pointerup", endPdfPan);
   elements.pdfScroll.addEventListener("pointercancel", endPdfPan);
   elements.pdfScroll.addEventListener("lostpointercapture", endPdfPan);
   elements.pdfScroll.addEventListener("wheel", zoomPdfWithWheel, { passive: false });
   elements.pdfScroll.addEventListener("dblclick", (event) => {
-    if (state.previewMode === "markdown") return;
+    if (state.mode === "edit" || state.previewMode === "markdown") return;
     if (state.previewMode === "fast") void locateFastPreviewSelection(event);
     else if (state.compileInFlight || state.buildPreviewAvailable === false) {
       elements.buildDrawer.classList.remove("hidden");
@@ -8269,14 +9387,27 @@ function bindEvents() {
       );
     } else void locatePdfSelection(event);
   });
-  elements.pdfScroll.addEventListener("scroll", updateVisiblePdfPage, { passive: true });
+  elements.pdfScroll.addEventListener("scroll", () => {
+    updateVisiblePdfPage();
+    syncMarkdownSourceToPreview();
+  }, { passive: true });
   window.addEventListener("resize", () => {
     fitAllSegmentRows();
     schedulePdfPanelResize();
+    if (state.previewMode === "markdown") syncMarkdownPreviewToSource();
   });
   document.querySelector("#warningsButton").addEventListener("click", toggleBuildDrawer);
   document.querySelector("#closeWarningsButton").addEventListener("click", closeBuildDrawer);
-  document.querySelectorAll(".mode-button").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
+  document.querySelectorAll(".mode-button[data-mode]").forEach((button) => button.addEventListener("click", async () => {
+    const next = button.dataset.mode;
+    if (next === "references") { setReferencesOpen(!state.referencesOpen); return; }
+    if (next === state.mode) return;
+    if (state.mode === "source" && next === "edit") {
+      while (state.sourceSaveInFlight) await new Promise((resolve) => window.setTimeout(resolve, 50));
+      if (state.sourceDirty && !await saveSourceFile({ quiet: true })) return;
+    }
+    setMode(next);
+  }));
   window.addEventListener("beforeunload", (event) => {
     if (
       !state.sourceDirty
@@ -8317,25 +9448,36 @@ function applyPBLaTexEntryView() {
   if (requested === "edit") setMode("edit", { loadCurrent: false });
   if (requested === "source") setMode("source", { loadCurrent: false });
   if (requested === "preview") {
-    setPreviewMode("fast");
+    setPreviewMode("pdf");
     elements.pdfScroll.setAttribute("tabindex", "-1");
     elements.pdfScroll.focus({ preventScroll: true });
   }
 }
 
 async function initialize() {
+  bindReview();
+  bindReferences();
   bindEvents();
+  window.setInterval(() => void syncProjectFileTree(), 1600);
+  window.addEventListener("focus", () => void syncProjectFileTree(true));
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void syncProjectFileTree(true);
+  });
+  elements.workspace.dataset.mode = state.mode;
+  setSidebarPanel(["files", "comments", ""].includes(state.sidebarPanel) ? state.sidebarPanel : "files", { persist: false });
+  applySidebarWidth(false);
+  translationLayout();
+  applyReadingSettings();
   observeSegmentEditorSize();
   window.paperBridgeDesktop?.onCloseRequest?.(handleDesktopCloseRequest);
   applyEditorPreferences(false);
   applyWorkspaceSplit(false);
   setPdfZoom(state.pdfZoom, { persist: false, preserveViewport: false });
-  setPreviewMode("fast");
+  setPreviewMode("pdf");
   refreshIcons();
   try {
     const ready = await refreshProject({ preserveDocument: false });
     applyPBLaTexEntryView();
-    updateWarnings([]);
   } catch (error) {
     toast(error.message, "error", 8000);
     elements.segmentList.innerHTML = '<div class="empty-state">无法打开论文项目</div>';

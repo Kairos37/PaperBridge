@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/vendor/mathlive/mathlive-static.css">
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/translation.css">
+  <link rel="stylesheet" href="/references.css">
+  <link rel="stylesheet" href="/review.css">
 </head>
 <body>
   <header class="topbar">
@@ -15,7 +18,10 @@
       <div class="brand-name">PaperBridge</div>
       <span class="topbar-divider" aria-hidden="true"></span>
       <div class="topbar-context" aria-label="当前项目与文件">
-        <span class="project-name" id="projectName">正在读取项目</span>
+        <button class="project-switcher-trigger" id="projectSwitcherButton" type="button" popovertarget="projectSwitcherPopover" aria-label="切换项目">
+          <span class="project-name" id="projectName">正在读取项目</span>
+          <i data-lucide="chevron-down"></i>
+        </button>
         <i data-lucide="chevron-right"></i>
         <span class="topbar-current-file" id="topCurrentFile">main.tex</span>
         <span class="header-save-state" id="headerSaveState">
@@ -24,84 +30,163 @@
       </div>
     </div>
 
-    <div class="top-actions">
-      <div class="sync-state" id="syncState">
-        <span class="status-dot"></span>
-        <span>检查同步状态</span>
+      <div class="source-commandbar topbar-editor-tools">
+        <div class="source-file-tabs">
+          <label class="source-file-control source-file-tab" id="sourceFileControl" title="选择要编辑的 TeX、Bib 或 Markdown 文件">
+            <i data-lucide="file-text"></i>
+            <select class="source-file-select" id="sourceFileSelect" aria-label="选择 TeX、Bib 或 Markdown 源文件"></select>
+          </label>
+          <button class="icon-button source-new-tab-button" id="sourceCreateTexButton" type="button" title="新建文件" aria-label="新建文件">
+            <i data-lucide="file-plus-2"></i>
+          </button>
+        </div>
+        <div class="source-command-tools">
+          <div class="source-tool-fields">
+          </div>
+          <div class="source-command-group" role="group" aria-label="源码操作">
+            <button class="icon-button" id="toggleSourceSearchButton" type="button" title="搜索与替换" aria-label="搜索与替换" aria-expanded="false"><i data-lucide="search"></i></button>
+            <div class="source-insert-menu">
+              <button class="icon-button" id="insertFigureSourceButton" type="button" aria-haspopup="menu" aria-expanded="false" title="插入图片、表格或公式" aria-label="插入内容">
+                <i data-lucide="shapes"></i><span>插入</span><i class="menu-chevron" data-lucide="chevron-down"></i>
+              </button>
+              <div class="insert-content-menu hidden" id="sourceInsertMenu" role="menu">
+                <button type="button" role="menuitem" data-insert-kind="figure"><i data-lucide="image-plus"></i>插入图片</button>
+                <button type="button" role="menuitem" data-insert-kind="table"><i data-lucide="table-2"></i>插入表格</button>
+                <button type="button" role="menuitem" data-insert-kind="formula"><i data-lucide="square-function"></i>插入公式</button>
+              </div>
+            </div>
+            <button class="icon-button" id="modularizeButton" type="button" title="拆分章节" aria-label="拆分章节">
+              <i data-lucide="files"></i>
+            </button>
+            <button class="icon-button" id="saveSourceButton" type="button" title="保存到当前 TeX / Bib 文件" aria-label="保存源码" disabled>
+              <i data-lucide="save"></i>
+            </button>
+            <button class="icon-button small" id="sourceFocusButton" type="button" title="专注编辑源码" aria-label="专注编辑源码" aria-pressed="false"><i data-lucide="maximize-2"></i></button>
+          </div>
+          <div class="file-meta source-status" id="sourceStatus" aria-live="polite">选择文件后可以直接修改</div>
+        </div>
       </div>
-      <label class="git-remote-target hidden" id="gitRemoteTarget" title="选择拉取和推送的目标仓库">
-        <span>同步到</span>
-        <select id="gitRemoteSelect" aria-label="Git 同步目标"></select>
-      </label>
-      <button class="button secondary" id="pullButton" title="从远端 Git 仓库拉取最新版本">
-        <i data-lucide="download"></i><span>拉取</span>
-      </button>
-      <button class="button secondary" id="compileButton" title="一键编译全文并刷新 PDF">
-        <i data-lucide="hammer"></i><span>编译全文</span>
-      </button>
+      <div class="preview-toolbar topbar-pdf-tools">
+        <div>
+          <div class="preview-title" id="previewTitle">英文排版</div>
+          <div class="page-status" id="pageStatus">PDF 未加载</div>
+        </div>
+        <div class="preview-actions">
+          <span class="preview-mode-pill" id="previewModeLabel">正式 PDF</span>
+          <button class="button primary preview-compile-button hidden" id="previewCompileButton" title="正式编译全文并刷新 PDF" aria-hidden="true" tabindex="-1">
+            <i data-lucide="hammer"></i><span>编译全文</span>
+          </button>
+          <div class="page-navigation" aria-label="PDF page navigation">
+            <button class="icon-button small" id="previousPageButton" title="上一页"><i data-lucide="chevron-left"></i></button>
+            <span id="visiblePage">1</span>
+            <button class="icon-button small" id="nextPageButton" title="下一页"><i data-lucide="chevron-right"></i></button>
+          </div>
+          <div class="pdf-zoom-control" aria-label="PDF 缩放">
+            <button class="icon-button small" id="zoomOutButton" title="缩小 PDF"><i data-lucide="zoom-out"></i></button>
+            <button class="pdf-zoom-value" id="pdfZoomValue" type="button" title="恢复适合宽度">100%</button>
+            <button class="icon-button small" id="zoomInButton" title="放大 PDF"><i data-lucide="zoom-in"></i></button>
+          </div>
+          <button class="icon-button" id="warningsButton" title="编译信息">
+            <i data-lucide="triangle-alert"></i>
+            <span class="notification-badge hidden" id="warningCount">0</span>
+            <span class="translation-build-label" id="translationBuildLabel">未编译</span>
+          </button>
+          <button class="icon-button" id="refreshPdfButton" title="刷新 PDF">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+          <a class="icon-button" id="openPdfButton" href="/api/pdf" target="_blank" title="在新窗口打开 PDF">
+            <i data-lucide="external-link"></i>
+          </a>
+        </div>
+      </div>
+    <div class="top-actions">
       <button class="icon-button undo-button" id="undoButton" type="button" title="没有可撤销的操作" disabled>
         <i data-lucide="undo-2"></i><span class="undo-count hidden" id="undoCount">0</span>
       </button>
-      <button class="button primary" id="pushButton" title="编译、提交并推送至远端 Git 仓库">
-        <i data-lucide="upload"></i><span>推送</span>
+      <button class="button quiet" id="syncMenuButton" type="button" popovertarget="syncPopover" title="同步">
+        <i data-lucide="cloud"></i><span>同步</span><i class="menu-chevron" data-lucide="chevron-down"></i>
       </button>
-      <button class="icon-button" id="settingsButton" title="设置">
-        <i data-lucide="settings"></i>
+      <button class="button primary" id="compileButton" title="一键编译全文并刷新 PDF">
+        <i data-lucide="play"></i><span>编译</span>
+      </button>
+      <button class="button secondary" id="exportPdfButton" title="导出 PDF">
+        <i data-lucide="file-down"></i><span>导出</span>
       </button>
     </div>
   </header>
 
   <main class="workspace">
-    <aside class="sidebar">
-      <div class="mode-switch" role="group" aria-label="工作区">
-        <button class="mode-button active" data-mode="source" type="button" aria-pressed="true">编辑</button>
-        <button class="mode-button" data-mode="edit" type="button" aria-pressed="false">翻译</button>
-        <button class="mode-button" data-mode="references" type="button" aria-pressed="false">文献</button>
+    <nav class="activity-bar" aria-label="工作区面板">
+      <button class="activity-button active" type="button" data-sidebar-panel="files" aria-label="文件" aria-controls="workspaceSidebar" aria-expanded="true" title="文件"><i data-lucide="files"></i></button>
+      <button class="activity-button" type="button" data-sidebar-panel="comments" aria-label="批注" aria-controls="workspaceSidebar" aria-expanded="false" title="批注"><i data-lucide="message-square"></i><span class="activity-badge hidden" id="annotationCount">0</span></button>
+      <button class="activity-button" id="settingsButton" type="button" aria-label="设置" title="设置"><i data-lucide="settings-2"></i></button>
+      <div class="activity-bottom">
+        <button class="activity-button" id="terminologyButton" type="button" aria-label="术语" title="论文术语表"><i data-lucide="book-open"></i><span class="activity-badge hidden" id="terminologyBadge">0</span></button>
+      </div>
+    </nav>
+    <aside class="sidebar" id="workspaceSidebar" data-panel="files" aria-label="文件与工具">
+      <div class="sidebar-panel-header">
+        <span id="sidebarPanelTitle">资源管理器</span>
+        <button class="icon-button small" id="closeSidebarButton" type="button" title="收起面板" aria-label="收起面板"><i data-lucide="panel-left-close"></i></button>
       </div>
 
-      <div class="sidebar-section project-sidebar-section">
+      <div class="sidebar-section document-sidebar-section" data-sidebar-content="files">
         <div class="sidebar-heading">
-          <span>PROJECT</span>
-        </div>
-        <nav class="project-switch-list" id="sidebarProjectList"></nav>
-      </div>
-
-      <div class="sidebar-section document-sidebar-section">
-        <div class="sidebar-heading">
-          <span>FILES</span>
+          <span>项目文件</span>
           <div class="sidebar-heading-actions">
-            <span class="count" id="documentCount">0</span>
+            <span class="count hidden" id="documentCount" aria-hidden="true"></span>
+            <button class="icon-button small" id="openProjectFolderButton" type="button" title="打开项目文件夹" aria-label="打开项目文件夹" disabled><i data-lucide="folder-open"></i></button>
             <button class="icon-button small" id="createTexFileButton" type="button" title="新建文件"><i data-lucide="file-plus-2"></i></button>
           </div>
         </div>
         <nav class="document-list" id="documentList"></nav>
       </div>
 
-      <div class="sidebar-section section-sidebar-section">
-        <div class="sidebar-heading section-heading">
-          <span>SECTIONS</span>
-          <div class="sidebar-heading-actions">
-            <span class="count" id="sectionCount">0</span>
+      <button class="sidebar-reference-button mode-button" type="button" data-sidebar-content="files" data-mode="references" aria-pressed="false" aria-controls="referencesView"><i data-lucide="library-big"></i><span>参考文献</span><i data-lucide="chevron-right"></i></button>
+      <details class="sidebar-section section-sidebar-section file-outline" id="fileOutline" data-sidebar-content="files">
+        <summary class="sidebar-heading section-heading"><i data-lucide="chevron-right"></i><span>大纲</span><span class="count hidden" id="sectionCount" aria-hidden="true"></span></summary>
+        <nav class="section-list" id="sectionList" aria-label="当前文件大纲"></nav>
+      </details>
+
+      <section class="review-center hidden" id="reviewCenter" data-sidebar-content="comments" aria-label="项目批注">
+        <div class="review-center-actions">
+          <button class="button secondary" id="reviewExportButton" type="button"><i data-lucide="download"></i><span>导出审阅版</span></button>
+          <button class="button secondary" id="reviewImportButton" type="button"><i data-lucide="file-up"></i><span>导入审阅</span></button>
+        </div>
+        <div class="review-filter-bar">
+          <div class="review-filters" role="group" aria-label="筛选批注">
+            <button type="button" data-review-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-review-filter="open" aria-pressed="false">未解决</button>
+            <button type="button" data-review-filter="mine" aria-pressed="false">我的</button>
+            <button type="button" data-review-filter="mentioned" aria-pressed="false">@我</button>
+            <button type="button" data-review-filter="unlocated" aria-pressed="false">待定位</button>
           </div>
+          <button type="button" class="icon-button review-profile-button" popovertarget="reviewProfile" title="我的批注署名" aria-label="我的批注署名"><i data-lucide="user-round"></i></button>
         </div>
-        <nav class="section-list" id="sectionList"></nav>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="metric-row">
-          <span>已翻译</span>
-          <strong id="translationProgress">0%</strong>
+        <div class="review-profile" id="reviewProfile" popover="auto">
+          <label for="reviewProfileName">我的批注署名</label>
+          <input id="reviewProfileName" type="text" maxlength="100" autocomplete="nickname" placeholder="我">
+          <small>用于回复和筛选 @我</small>
         </div>
-        <div class="progress-track"><div class="progress-fill" id="translationProgressBar"></div></div>
-        <button class="button secondary terminology-open-button" id="terminologyButton" type="button">
-          <i data-lucide="book-open"></i><span>查看术语表</span>
-        </button>
-      </div>
-
-      <button class="sidebar-project-switcher" id="projectSwitcherButton" type="button" popovertarget="projectSwitcherPopover" aria-label="打开其他项目">
-        <i data-lucide="panel-left-open"></i><span>打开其他项目</span>
-      </button>
+        <div class="review-center-content" id="reviewCenterContent">
+          <div class="review-warning-list" id="reviewWarningList"></div>
+          <div class="review-thread-list" id="reviewThreadList"></div>
+        </div>
+        <div class="review-center-footer">
+          <button class="button quiet" type="button" id="reviewAddButton"><i data-lucide="message-square-plus"></i><span>添加批注</span></button>
+          <button class="button quiet" type="button" id="reviewRepliesButton"><i data-lucide="list-checks"></i><span>导出回复清单</span></button>
+        </div>
+      </section>
+      <div class="sidebar-resize-handle" id="sidebarResizeHandle" role="separator" tabindex="0" aria-label="调整侧栏宽度" aria-orientation="vertical" aria-valuemin="120" aria-valuemax="480" aria-valuenow="160"></div>
     </aside>
+
+    <div class="sync-popover" id="syncPopover" popover="auto">
+      <div class="sync-menu-heading"><strong>项目同步</strong><div class="sync-state" id="syncState"><span class="status-dot"></span><span>检查同步状态</span></div></div>
+      <nav class="project-switch-list" id="sidebarProjectList"></nav>
+      <label class="git-remote-target hidden" id="gitRemoteTarget" title="选择拉取和推送的目标仓库"><span>同步到</span><select id="gitRemoteSelect" aria-label="Git 同步目标"></select></label>
+      <button class="sync-menu-item" id="pullButton" type="button" title="从远端 Git 仓库拉取最新版本"><i data-lucide="download"></i><span>拉取远端更改</span></button>
+      <button class="sync-menu-item" id="pushButton" type="button" title="编译、提交并推送至远端 Git 仓库"><i data-lucide="upload"></i><span>推送本地更改</span></button>
+    </div>
 
     <div class="project-switcher-popover" id="projectSwitcherPopover" popover="auto">
       <div class="project-switcher-header">
@@ -118,23 +203,28 @@
 
     <section class="editor-panel hidden" id="editView">
       <div class="panel-toolbar">
-        <div>
+        <div class="file-view-heading">
+          <div id="translationModeSlot"></div>
           <h1 id="currentFile">Select a document</h1>
           <div class="file-meta" id="fileMeta">0 paragraphs</div>
         </div>
+        <div class="translation-direction-actions" role="group" aria-label="翻译方向">
+          <button class="button" id="translateSectionButton" type="button" aria-pressed="true" title="按当前章节，用中文工作稿更新英文 LaTeX">中 → EN</button>
+          <button class="button" id="translateFileButton" type="button" aria-pressed="false" title="为当前文件生成中文工作稿">EN → 中</button>
+        </div>
+        <button class="button quiet" id="translateScopeButton" type="button" title="翻译本节" aria-label="翻译本节"><i data-lucide="languages"></i><span>翻译本节</span></button>
+        <div class="translation-file-progress">
+          <p class="translation-progress-text" id="translationProgress"><span id="translationProgressCount">已翻译 0/0 段 · </span><span id="translationProgressPercent">0%</span></p>
+          <div class="progress-track"><div class="progress-fill" id="translationProgressBar"></div></div>
+        </div>
         <div class="toolbar-actions">
-          <div class="font-size-control" aria-label="编辑字号">
-            <button class="icon-button small" id="decreaseFontButton" title="减小字号"><i data-lucide="minus"></i></button>
-            <span id="editorFontSize">16</span>
-            <button class="icon-button small" id="increaseFontButton" title="增大字号"><i data-lucide="plus"></i></button>
+          <span class="bilingual-layout-label hidden" id="bilingualLayoutLabel"></span>
+          <div class="translation-layout-actions" role="group" aria-label="翻译布局">
+            <button class="icon-button translation-icon" id="translationExpandButton" type="button" title="完全展开编辑区" aria-label="完全展开编辑区" aria-pressed="false"><i data-lucide="maximize-2"></i></button>
+            <button class="icon-button translation-icon" data-translation-layout="compare" type="button" title="上下排版" aria-label="上下排版"><i data-lucide="rows-2"></i></button>
+            <button class="icon-button translation-icon" data-translation-layout="wide" type="button" title="左右排版" aria-label="左右排版"><i data-lucide="columns-2"></i></button>
           </div>
-          <select class="translation-section-select" id="translationSectionSelect" aria-label="当前 TeX 文件章节列表" title="当前 TeX 文件章节列表"></select>
-          <button class="button primary" id="translateSectionButton" title="将所选章节已有的中文工作稿逐段更新到英文 LaTeX">
-            <i data-lucide="arrow-right"></i><span>翻译本节</span>
-          </button>
-          <button class="button secondary" id="translateFileButton" title="为当前 TeX 文件的所有正文段落生成或更新中文版本">
-            <i data-lucide="languages"></i><span>翻译当前 TeX</span>
-          </button>
+          <button class="icon-button translation-icon" type="button" popovertarget="translationDisplayPopover" title="显示设置" aria-label="显示设置"><i data-lucide="sliders-horizontal"></i></button>
         </div>
       </div>
 
@@ -162,45 +252,12 @@
     </section>
 
     <section class="editor-panel source-panel" id="sourceView">
-      <div class="source-titlebar">
-        <h1 id="sourceViewTitle">TeX / Bib 源码</h1>
-        <button class="icon-button small" id="sourceFocusButton" type="button" title="专注编辑源码" aria-label="专注编辑源码" aria-pressed="false">
-          <i data-lucide="maximize-2"></i>
-        </button>
-      </div>
-      <div class="source-commandbar">
-        <div class="source-file-tabs">
-          <label class="source-file-control source-file-tab" id="sourceFileControl" title="选择要编辑的 TeX、Bib 或 Markdown 文件">
-            <i data-lucide="file-text"></i>
-            <select class="source-file-select" id="sourceFileSelect" aria-label="选择 TeX、Bib 或 Markdown 源文件"></select>
-          </label>
-          <button class="icon-button source-new-tab-button" id="sourceCreateTexButton" type="button" title="新建文件" aria-label="新建文件">
-            <i data-lucide="plus"></i>
-          </button>
+      <div class="source-titlebar" id="sourceModeSlot">
+        <div class="file-view-tabs" id="fileEditorModes" role="group" aria-label="当前文件视图">
+          <button class="mode-button active" type="button" data-mode="source" aria-pressed="true">源码</button>
+          <button class="mode-button" type="button" data-mode="edit" aria-pressed="false">中英对照</button>
         </div>
-        <div class="source-command-tools">
-          <div class="source-tool-fields">
-          </div>
-          <div class="source-command-group" role="group" aria-label="源码操作">
-            <div class="source-insert-menu">
-              <button class="button secondary" id="insertFigureSourceButton" type="button" aria-haspopup="menu" aria-expanded="false">
-                <i data-lucide="plus"></i><span>插入</span><i data-lucide="chevron-down"></i>
-              </button>
-              <div class="insert-content-menu hidden" id="sourceInsertMenu" role="menu">
-                <button type="button" role="menuitem" data-insert-kind="figure"><i data-lucide="image-plus"></i>插入图片</button>
-                <button type="button" role="menuitem" data-insert-kind="table"><i data-lucide="table-2"></i>插入表格</button>
-                <button type="button" role="menuitem" data-insert-kind="formula"><i data-lucide="square-function"></i>插入公式</button>
-              </div>
-            </div>
-            <button class="button secondary" id="modularizeButton" type="button">
-              <i data-lucide="files"></i><span>拆分章节</span>
-            </button>
-            <button class="button primary" id="saveSourceButton" type="button" title="保存到当前 TeX / Bib 文件" disabled>
-              <i data-lucide="save"></i><span>保存 TeX</span>
-            </button>
-          </div>
-          <div class="file-meta source-status" id="sourceStatus" aria-live="polite">选择文件后可以直接修改</div>
-        </div>
+        <h1 class="visually-hidden" id="sourceViewTitle">TeX / Bib 源码</h1>
       </div>
       <div class="project-file-preview hidden" id="projectFilePreview">
         <div class="project-file-preview-header">
@@ -214,6 +271,7 @@
       </div>
       <div class="source-editor-shell">
         <pre class="source-line-numbers" id="sourceLineNumbers" aria-hidden="true">1</pre>
+        <div class="review-source-gutter" id="reviewSourceGutter" aria-label="源码行批注"></div>
         <div class="source-editor-stage">
           <pre class="source-highlight-layer" id="sourceHighlightLayer" aria-hidden="true"><code></code></pre>
           <textarea class="source-editor" id="sourceEditor" aria-label="TeX、Bib 或 Markdown 源码编辑器" autocomplete="off" autocapitalize="off" spellcheck="false" wrap="soft"></textarea>
@@ -228,24 +286,52 @@
           <div class="file-meta" id="referencesMeta">读取当前 Bib 文件和正文引用</div>
         </div>
         <div class="toolbar-actions">
-          <button class="icon-button" id="closeReferencesButton" type="button" title="关闭参考文献，返回 PDF" aria-label="关闭参考文献，返回 PDF">
-            <i data-lucide="x"></i>
-          </button>
+          <button class="icon-button" id="closeReferencesButton" type="button" title="关闭参考文献工作台" aria-label="关闭参考文献工作台"><i data-lucide="x"></i></button>
         </div>
       </div>
+      <nav class="reference-health" id="referenceHealth" aria-label="参考文献体检"></nav>
       <div class="references-workbench">
-        <section class="references-list-panel">
-          <label class="references-search">
-            <i data-lucide="search"></i>
-            <input id="referencesSearch" type="search" autocomplete="off" placeholder="搜索 DOI、标题、作者、年份">
-          </label>
-          <div class="references-alerts" id="referencesAlerts"></div>
+        <section class="references-list-panel" aria-label="文献列表">
+          <div class="reference-search-row" role="search">
+            <label class="references-search">
+              <i data-lucide="search"></i>
+              <input id="referencesSearch" type="search" autocomplete="off" placeholder="搜索 DOI、标题、作者、年份" aria-label="搜索参考文献">
+            </label>
+            <button class="button primary reference-add-trigger" id="referenceAddButton" type="button" title="新增参考文献" aria-label="新增参考文献"><i data-lucide="plus"></i><span>新增</span></button>
+          </div>
+          <div class="reference-list-controls">
+            <button class="reference-filter-button" type="button" data-reference-filter="unused" aria-pressed="false">未引用</button>
+            <button class="reference-filter-button" type="button" data-reference-filter="fields" aria-pressed="false">缺字段</button>
+            <details class="reference-filter-menu">
+              <summary title="筛选年份和文献类型"><i data-lucide="sliders-horizontal"></i><span>筛选</span></summary>
+              <div class="reference-filter-fields">
+                <fieldset><legend>年份范围</legend>
+                  <div class="reference-year-range">
+                    <input id="referenceYearFrom" type="number" min="1000" max="2999" placeholder="起始" aria-label="起始年份">
+                    <span>至</span>
+                    <input id="referenceYearTo" type="number" min="1000" max="2999" placeholder="结束" aria-label="结束年份">
+                  </div>
+                </fieldset>
+                <label>文献类型<select id="referenceTypeFilter"><option value="">全部类型</option></select></label>
+                <button class="button quiet" type="button" id="clearReferenceFilters">清除筛选</button>
+              </div>
+            </details>
+            <select id="referenceSort" aria-label="文献排序" title="添加时间排序对原有条目使用 Bib 文件顺序">
+              <option value="citation">引用顺序</option>
+              <option value="year">年份（新到旧）</option>
+              <option value="author">作者（A–Z）</option>
+              <option value="added">添加时间（新到旧）</option>
+            </select>
+            <output id="referencesCount" aria-label="匹配数 / 总数" aria-live="polite"></output>
+          </div>
+          <div class="reference-filter-context hidden" id="referenceFilterContext"></div>
           <div class="references-list" id="referencesList">
             <div class="empty-state">正在读取参考文献...</div>
           </div>
+          <div class="references-alerts" id="referencesAlerts" aria-label="参考文献提示"></div>
         </section>
-        <section class="reference-detail-panel" id="referenceDetail">
-          <div class="empty-state">选择一篇文献后查看 BibTeX 源码和字段解释。</div>
+        <section class="reference-detail-panel" id="referenceDetail" aria-label="文献详情">
+          <div class="empty-state">选择文献后查看详情和正文引用位置。</div>
         </section>
       </div>
     </section>
@@ -266,42 +352,8 @@
     </button>
 
     <aside class="preview-panel">
-      <div class="preview-toolbar">
-        <div>
-          <div class="preview-title" id="previewTitle">英文排版</div>
-          <div class="page-status" id="pageStatus">PDF 未加载</div>
-        </div>
-        <div class="preview-actions">
-          <span class="preview-mode-pill" id="previewModeLabel">快速预览</span>
-          <button class="button primary preview-compile-button" id="previewCompileButton" title="正式编译全文并刷新 PDF">
-            <i data-lucide="hammer"></i><span>编译全文</span>
-          </button>
-          <div class="page-navigation" aria-label="PDF page navigation">
-            <button class="icon-button small" id="previousPageButton" title="上一页"><i data-lucide="chevron-left"></i></button>
-            <span id="visiblePage">1</span>
-            <button class="icon-button small" id="nextPageButton" title="下一页"><i data-lucide="chevron-right"></i></button>
-          </div>
-          <div class="pdf-zoom-control" aria-label="PDF 缩放">
-            <button class="icon-button small" id="zoomOutButton" title="缩小 PDF"><i data-lucide="zoom-out"></i></button>
-            <button class="pdf-zoom-value" id="pdfZoomValue" type="button" title="恢复适合宽度">100%</button>
-            <button class="icon-button small" id="zoomInButton" title="放大 PDF"><i data-lucide="zoom-in"></i></button>
-          </div>
-          <button class="icon-button" id="warningsButton" title="编译信息">
-            <i data-lucide="triangle-alert"></i>
-            <span class="notification-badge hidden" id="warningCount">0</span>
-          </button>
-          <button class="icon-button" id="refreshPdfButton" title="刷新 PDF">
-            <i data-lucide="refresh-cw"></i>
-          </button>
-          <button class="icon-button" id="exportPdfButton" title="导出 PDF">
-            <i data-lucide="file-down"></i>
-          </button>
-          <a class="icon-button" id="openPdfButton" href="/api/pdf" target="_blank" title="在新窗口打开 PDF">
-            <i data-lucide="external-link"></i>
-          </a>
-        </div>
-      </div>
       <div class="pdf-scroll" id="pdfScroll" aria-label="Compiled English paper preview"></div>
+      <div id="translationPdfToolbar"></div>
       <div class="build-drawer hidden" id="buildDrawer">
         <div class="drawer-header">
           <strong>编译信息</strong>
@@ -320,6 +372,64 @@
     </aside>
   </main>
 
+  <div id="translationDisplayPopover" popover role="dialog" aria-label="翻译显示设置">
+    <div class="translation-display-head">
+      <strong>显示设置</strong>
+      <button class="icon-button" type="button" popovertarget="translationDisplayPopover" popovertargetaction="hide" title="关闭显示设置" aria-label="关闭显示设置"><i data-lucide="x"></i></button>
+    </div>
+    <label class="translation-display-field">字号
+      <select id="translationReadingSize"><option>14</option><option>15</option><option selected>16</option><option>17</option><option>18</option><option>20</option></select>
+    </label>
+    <label class="translation-display-field">行距
+      <select id="translationReadingLeading"><option>1.5</option><option>1.6</option><option selected>1.8</option><option>2</option></select>
+    </label>
+    <label class="translation-display-field">版宽
+      <select id="translationReadingWidth"><option value="full" selected>铺满</option><option value="32">32 字宽</option><option value="40">40 字宽</option><option value="48">48 字宽</option></select>
+    </label>
+    <label class="translation-display-field">阅读字体
+      <select id="translationReadingFont"><option value="sans">黑体</option><option value="serif">宋体</option></select>
+    </label>
+  </div>
+  <input class="hidden" id="reviewImportFile" type="file" accept=".pdf,application/pdf">
+  <button class="review-selection-button hidden" id="reviewSelectionButton" type="button"><i data-lucide="message-square-plus"></i><span>添加批注</span></button>
+  <div class="review-drop-cue hidden" id="reviewDropCue"><i data-lucide="file-up"></i>松开以导入审阅 PDF</div>
+
+  <dialog class="review-dialog" id="reviewImportDialog" aria-labelledby="reviewImportTitle">
+    <header class="review-dialog-header">
+      <h2 id="reviewImportTitle">导入审阅</h2>
+      <button class="icon-button" type="button" data-close-review="reviewImportDialog" aria-label="关闭"><i data-lucide="x"></i></button>
+    </header>
+    <div class="review-dialog-body">
+      <div id="reviewImportStatus" role="status" aria-live="polite"></div>
+      <div class="review-import-authors" id="reviewImportAliases"></div>
+      <div id="reviewImportItems" class="review-import-items"></div>
+    </div>
+    <footer class="review-dialog-actions">
+      <button class="button secondary" type="button" data-close-review="reviewImportDialog">取消</button>
+      <button class="button primary" id="reviewImportConfirm" type="button" disabled>合并批注</button>
+    </footer>
+  </dialog>
+
+  <dialog class="review-dialog review-note-dialog" id="reviewNoteDialog" aria-labelledby="reviewNoteTitle">
+    <form id="reviewNoteForm">
+      <header class="review-dialog-header">
+        <h2 id="reviewNoteTitle">添加批注</h2>
+        <button class="icon-button" type="button" data-close-review="reviewNoteDialog" aria-label="关闭"><i data-lucide="x"></i></button>
+      </header>
+      <div class="review-dialog-body">
+        <p class="review-note-anchor" id="reviewNoteAnchor"></p>
+        <blockquote class="review-quote hidden" id="reviewNoteQuote"></blockquote>
+        <label>类型<select id="reviewNoteType"><option value="question">疑问</option><option value="task">待办</option><option value="term">术语</option><option value="citation">引用</option><option value="polish">润色</option></select></label>
+        <textarea id="reviewNoteText" rows="4" aria-label="批注内容" placeholder="写下批注…" required spellcheck="false"></textarea>
+        <p class="review-inline-error" id="reviewNoteError" role="status"></p>
+      </div>
+      <footer class="review-dialog-actions">
+        <button class="button secondary" type="button" data-close-review="reviewNoteDialog">取消</button>
+        <button class="button primary" id="reviewNoteSubmit" type="submit">保存批注</button>
+      </footer>
+    </form>
+  </dialog>
+
   <dialog class="setup-dialog" id="setupDialog">
     <form class="setup-form" id="setupForm">
       <div class="setup-header">
@@ -330,6 +440,7 @@
         </div>
         <button class="icon-button hidden" id="closeSetupButton" type="button" title="关闭"><i data-lucide="x"></i></button>
       </div>
+
 
       <section class="setup-section" id="setupStorageSection">
         <div class="setup-section-heading"><span class="setup-step">1</span><strong>选择数据保存位置</strong></div>
@@ -354,7 +465,7 @@
         <label class="field wide project-name-field">
           <span>项目名称</span>
           <input id="setupProjectName" type="text" maxlength="120" autocomplete="off" placeholder="例如：CEDAR INFOCOM 论文">
-          <small class="field-note">只修改 PaperBridge 中的显示名称，不会改动文件夹名或远端仓库。</small>
+          <small class="field-note">留空时使用项目文件夹名。可在设置中修改显示名称。</small>
         </label>
         <div class="source-switch" role="radiogroup" aria-label="论文来源">
           <label><input type="radio" name="setupSource" value="new" checked><span><i data-lucide="file-plus-2"></i>新建项目</span></label>
@@ -485,7 +596,7 @@
       <section class="setup-section compact">
         <div class="setup-section-heading"><span class="setup-step" id="setupTypesetStep">4</span><strong>排版设置</strong></div>
         <div class="setup-options-row">
-          <label class="toggle-row setup-toggle"><input id="setupAutoCompile" type="checkbox"><span>保存英文或 TeX 后自动编译（可选）</span></label>
+          <p class="file-meta">打开项目时编译一次；修改内容后，请点击“编译全文”更新 PDF。</p>
           <div class="dependency-status" id="dependencyStatus"></div>
         </div>
       </section>
@@ -545,10 +656,11 @@
         <button class="icon-button" id="closeReferenceInsertButton" type="button" title="关闭"><i data-lucide="x"></i></button>
       </div>
       <div class="reference-insert-body">
-        <label class="references-search">
-          <i data-lucide="search"></i>
-          <input id="referenceInsertSearch" type="search" autocomplete="off" placeholder="搜索标题、作者、方法关键词、venue、年份或 citation key">
-        </label>
+        <div class="reference-search-row" role="search">
+          <label class="references-search"><i data-lucide="search"></i>
+          <input id="referenceInsertSearch" type="search" autocomplete="off" placeholder="搜索标题、作者、方法关键词、venue、年份或 citation key" aria-label="搜索待插入的参考文献"></label>
+          <button class="button secondary reference-add-trigger" id="referenceInsertAddButton" type="button" title="新增参考文献" aria-label="新增参考文献"><i data-lucide="plus"></i><span>新增</span></button>
+        </div>
         <div class="references-list compact" id="referenceInsertList"></div>
       </div>
       <div class="dialog-actions">
@@ -557,42 +669,80 @@
     </form>
   </dialog>
 
-  <dialog class="reference-add-dialog" id="referenceAddDialog">
+  <dialog class="reference-add-dialog" id="referenceAddDialog" aria-labelledby="referenceAddTitle">
     <form class="reference-add-form" id="referenceAddForm" novalidate>
       <div class="dialog-header">
-        <div>
-          <h2>新增参考文献</h2>
-          <div class="file-meta">输入 DOI、arXiv、IEEE 或网页链接，自动生成并确认 BibTeX</div>
-        </div>
-        <button class="icon-button" id="closeReferenceAddButton" type="button" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+        <h2 id="referenceAddTitle">新增参考文献</h2>
+        <button class="icon-button" id="closeReferenceAddButton" type="button" title="关闭" aria-label="关闭新增文献"><i data-lucide="x"></i></button>
       </div>
       <div class="reference-add-body">
-        <label class="field">
-          <span>DOI 或网页链接</span>
-          <div class="reference-add-url-row">
-            <input id="referenceAddUrl" type="text" inputmode="url" placeholder="DOI、arXiv、IEEE 或普通网页链接" autocomplete="off">
-            <button class="button secondary" id="referenceLookupButton" type="button"><i data-lucide="search"></i><span>获取信息</span></button>
-          </div>
-        </label>
-        <div class="reference-add-status" id="referenceAddStatus">粘贴 DOI、arXiv、IEEE 或普通网页链接，然后获取元数据。</div>
-        <div class="reference-add-grid">
-          <label class="field">
-            <span>写入 Bib 文件</span>
-            <select id="referenceAddBibFile"></select>
-          </label>
-          <label class="field">
-            <span>citation key</span>
-            <input id="referenceAddKey" type="text" placeholder="author2024keyword" autocomplete="off">
-          </label>
+        <div class="reference-import-methods" role="group" aria-label="导入方式">
+          <button type="button" data-import-mode="doi" aria-pressed="true">DOI / 链接</button>
+          <button type="button" data-import-mode="title" aria-pressed="false">按标题</button>
+          <button type="button" data-import-mode="bibtex" aria-pressed="false">BibTeX</button>
+          <button type="button" data-import-mode="upload" aria-pressed="false">上传 .bib</button>
+          <button type="button" data-import-mode="bulk" aria-pressed="false">批量 DOI</button>
+          <button type="button" data-import-mode="manual" aria-pressed="false">手动填写</button>
         </div>
-        <label class="field">
-          <span>BibTeX 预览（可直接修改）</span>
-          <textarea id="referenceAddBib" class="reference-add-bib" spellcheck="false" placeholder="获取信息后显示 BibTeX"></textarea>
-        </label>
+        <div data-import-panel="doi">
+          <input id="referenceAddUrl" type="text" inputmode="url" placeholder="粘贴 DOI、arXiv、IEEE 或网页链接" aria-label="DOI 或网页链接" autocomplete="off">
+        </div>
+        <div class="reference-title-lookup hidden" data-import-panel="title">
+          <input id="referenceTitleQuery" type="search" placeholder="输入论文标题" aria-label="论文标题" autocomplete="off">
+          <select id="referenceTitleProvider" aria-label="标题搜索来源">
+            <option value="crossref">Crossref</option><option value="dblp">DBLP</option><option value="semantic">Semantic Scholar</option><option value="arxiv">arXiv</option>
+          </select>
+          <button class="button secondary" id="referenceTitleSearchButton" type="button"><i data-lucide="search"></i><span>搜索</span></button>
+        </div>
+        <div class="hidden" data-import-panel="bibtex">
+          <textarea id="referencePasteBib" rows="4" placeholder="粘贴一个或多个 BibTeX 条目" spellcheck="false" aria-label="粘贴 BibTeX"></textarea>
+        </div>
+        <div class="hidden" data-import-panel="upload">
+          <label class="reference-upload-choice"><i data-lucide="file-up"></i><span>选择 .bib 文件</span><input id="referenceBibUpload" type="file" accept=".bib,application/x-bibtex,text/plain"></label>
+        </div>
+        <div class="hidden" data-import-panel="bulk">
+          <textarea id="referenceBulkDoi" rows="3" placeholder="每行一个 DOI，最多 40 条" spellcheck="false" aria-label="批量 DOI"></textarea>
+          <button class="button secondary" id="referenceBulkLookupButton" type="button"><i data-lucide="search"></i><span>获取文献</span></button>
+        </div>
+        <div class="reference-manual-fields hidden" data-import-panel="manual">
+          <label>文献类型<select id="referenceManualType">
+            <option value="inproceedings">会议论文</option><option value="article">期刊论文</option>
+            <option value="book">专著</option><option value="incollection">书籍章节</option>
+            <option value="phdthesis">博士论文</option><option value="mastersthesis">硕士论文</option>
+            <option value="techreport">技术报告</option><option value="preprint">预印本</option><option value="misc">网页 / 其他</option>
+          </select></label>
+          <div id="referenceManualFields"></div>
+        </div>
+        <div class="reference-add-status hidden" id="referenceAddStatus" role="status" aria-live="polite"></div>
+        <div id="referenceImportCandidates" class="reference-import-candidates hidden" aria-label="候选文献"></div>
+        <section class="reference-import-preview hidden" id="referenceImportPreview" aria-label="文献预览">
+          <div id="referenceImportIdentity"></div>
+          <label class="reference-key-field">citation key
+            <input id="referenceAddKey" type="text" autocomplete="off" autocapitalize="none" spellcheck="false">
+          </label>
+          <div id="referenceImportWarnings" class="reference-import-warnings" aria-live="polite"></div>
+          <details class="reference-bib-details" id="referenceImportSource">
+            <summary>查看 / 编辑源码</summary>
+            <textarea id="referenceAddBib" class="reference-add-bib" rows="6" spellcheck="false" aria-label="BibTeX 源码"></textarea>
+          </details>
+        </section>
+        <div id="referenceImportMultipleFiles" class="reference-import-destination"></div>
+        <details class="reference-advanced" id="referenceImportAdvanced">
+          <summary>高级选项</summary>
+          <div class="reference-add-grid">
+            <label class="reference-bib-target" id="referenceBibTarget">写入 Bib 文件<select id="referenceAddBibFile"></select></label>
+            <label>引用名规则<select id="referenceKeyRule">
+              <option value="author-year-title">第一作者姓 + 年份 + 标题词</option>
+              <option value="author-year">第一作者姓 + 年份</option>
+              <option value="title-year">标题词 + 年份</option>
+            </select></label>
+          </div>
+        </details>
       </div>
       <div class="dialog-actions">
         <button class="button secondary" id="cancelReferenceAddButton" type="button">取消</button>
-        <button class="button primary" id="addReferenceButtonSubmit" type="submit">加入 Bib 文件</button>
+        <button class="button secondary hidden" id="addAndCiteReferenceButton" type="submit" disabled>加入并插入引用</button>
+        <button class="button primary" id="addReferenceButtonSubmit" type="submit" disabled>加入 Bib 文件</button>
       </div>
     </form>
   </dialog>
@@ -613,7 +763,7 @@
         </div>
         <label class="field">
           <span>中文/英文工作稿</span>
-          <textarea class="paragraph-textarea" id="newParagraphChinese" lang="zh-CN" placeholder="输入需要新增的完整中文或英文段落"></textarea>
+          <textarea class="paragraph-textarea" id="newParagraphChinese" lang="zh-CN" spellcheck="false" placeholder="输入需要新增的完整中文或英文段落"></textarea>
         </label>
       </div>
       <div class="dialog-actions">
@@ -963,7 +1113,17 @@
           <h2>本地设置</h2>
           <div class="file-meta">配置仅保存在此电脑</div>
         </div>
-        <button class="icon-button" value="cancel" title="关闭"><i data-lucide="x"></i></button>
+        <button class="icon-button" id="closeSettingsButton" type="button" title="关闭"><i data-lucide="x"></i></button>
+      </div>
+
+      <div class="settings-section appearance-settings">
+        <div class="settings-section-title"><i data-lucide="panels-top-left"></i><span>工作区布局</span></div>
+        <fieldset class="layout-setting"><legend>中英文对照</legend>
+          <div class="layout-options">
+            <label><input type="radio" name="bilingualLayout" value="horizontal" checked><i data-lucide="columns-2"></i><span>左右排版</span></label>
+            <label><input type="radio" name="bilingualLayout" value="vertical"><i data-lucide="rows-2"></i><span>上下排版</span></label>
+          </div>
+        </fieldset>
       </div>
 
       <div class="settings-grid">
@@ -1026,10 +1186,7 @@
         <div class="provider-grid" data-provider="diagnosis"></div>
       </div>
 
-      <label class="toggle-row">
-        <input id="autoCompileInput" type="checkbox">
-        <span>保存英文或 TeX 后自动编译（可选）</span>
-      </label>
+      <p class="file-meta">打开项目时编译一次；其余时间仅在点击“编译全文”后更新 PDF。</p>
 
       <div class="dialog-actions">
         <button type="button" class="button secondary" id="testTranslationButton">

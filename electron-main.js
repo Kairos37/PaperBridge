@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
-import { startServer, stopServer } from "./server.js";
+import { getProjectDirectory, startServer, stopServer } from "./server.js";
 
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
 const bootstrapUserData = app.getPath("userData");
@@ -167,6 +167,13 @@ function registerDesktopHandlers() {
   ipcMain.handle("paperbridge:choose-folder", async () => {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
     return result.canceled ? "" : result.filePaths[0];
+  });
+  ipcMain.handle("paperbridge:open-project-folder", async (event, projectRoot) => {
+    if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return false;
+    const folder = await getProjectDirectory(projectRoot);
+    const error = await shell.openPath(folder);
+    if (error) throw new Error(`无法打开项目文件夹：${error}`);
+    return true;
   });
   ipcMain.handle("paperbridge:choose-data-folder", async (_event, currentPath) => {
     const requested = String(currentPath || "").trim();

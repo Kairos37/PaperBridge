@@ -1,6 +1,6 @@
 {
   "name": "paper-bridge",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Local bilingual LaTeX editor with AI translation and Overleaf synchronization",
@@ -31,11 +31,16 @@
     "lucide": "^1.24.0",
     "marked": "^18.1.0",
     "mathlive": "^0.110.0",
-    "pdfjs-dist": "^6.1.200"
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "^6.1.200",
+    "ws": "^8.22.0",
+    "y-webrtc": "^10.3.0",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "electron": "^43.1.0",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "playwright-core": "^1.61.1",
     "png-to-ico": "^3.0.2"
   },
@@ -59,7 +64,10 @@
       "!data/**/*",
       "!test/**/*",
       "!*.log",
-      "!*.png"
+      "!*.png",
+      "!lib/collaboration*.js",
+      "!public/collaboration*.js",
+      "!public/vendor/collaboration.js"
     ],
     "extraResources": [
       {
@@ -67,6 +75,7 @@
         "to": "bin",
         "filter": [
           "tectonic.exe",
+          "synctex/**/*",
           "darwin-x64/tectonic",
           "darwin-arm64/tectonic"
         ]

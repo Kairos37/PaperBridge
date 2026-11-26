@@ -8,6 +8,7 @@ import {
   metadataToBibEntry,
   normalizeReferenceUrl,
   parseBibEntryText,
+  searchReferenceTitles,
   suggestCitationKey
 } from "../lib/reference-import.js";
 import { startServer, stopServer } from "../server.js";
@@ -123,7 +124,7 @@ test("IEEE pages can resolve a missing DOI through a high-confidence Crossref ti
   const metadata = await lookupReferenceUrl(pageUrl, {
     fetchImpl: async (url) => {
       if (url === pageUrl) return new Response(html, { status: 200, headers: { "content-type": "text/html" } });
-      assert.match(url, /api\.crossref\.org\/works\?query\.title=Reliable\+Satellite\+IoT\+Routing/);
+      assert.match(url, /api\.crossref\.org\/works\?query\.bibliographic=Reliable\+Satellite\+IoT\+Routing/);
       return new Response(JSON.stringify({
         message: {
           items: [{
@@ -143,6 +144,115 @@ test("IEEE pages can resolve a missing DOI through a high-confidence Crossref ti
   assert.equal(metadata.doiDiscovery, "title-match");
   assert.match(entry.raw, /@inproceedings\{doe2025reliable,/);
   assert.match(entry.raw, /doi=\{10\.1109\/INFOCOM12345\.2025\.1234567\}/);
+});
+
+test("IEEE document, abstract, stamp and legacy links resolve to the same article", () => {
+  for (const input of [
+    "https://ieeexplore.ieee.org/document/9919149/",
+    "https://ieeexplore.ieee.org/abstract/document/9919149?foo=bar#citations",
+    "ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9919149",
+    "http://ieeexplore.ieee.org/xpl/articleDetails.jsp?arnumber=9919149",
+    "https://ieeexplore.ieee.org/ielx7/6287639/6514899/09919149.pdf?arnumber=9919149"
+  ]) {
+    assert.equal(normalizeReferenceUrl(input).url, "https://ieeexplore.ieee.org/document/9919149");
+  }
+  assert.equal(normalizeReferenceUrl("https://ieeexplore.ieee.org.example.com/document/9919149").url,
+    "https://ieeexplore.ieee.org.example.com/document/9919149");
+});
+
+test("IEEE embedded article metadata supplies DOI and author names without using cited DOIs", async () => {
+  const pageUrl = "https://ieeexplore.ieee.org/document/9919149";
+  const data = {
+    articleNumber: "9919149",
+    title: 'Reliable {Satellite} Links: A "Practical" Study',
+    authors: [{ firstName: "Jane", lastName: "de Vries", affiliation: [{ name: "Example Lab" }] }],
+    contentType: "Journals",
+    publicationTitle: "IEEE Access",
+    publicationYear: "2022",
+    volume: "10", startPage: "100", endPage: "110",
+    doi: "10.1109/ACCESS.2022.3214663"
+  };
+  const html = '<html><head><title>IEEE Xplore</title></head><body>'
+    + '<a href="https://doi.org/10.1000/unrelated">Cited work</a>'
+    + '<script>var xplGlobal = {}; xplGlobal.document.metadata = '
+    + JSON.stringify(data) + '; window.afterMetadata = true;</script></body></html>';
+  const metadata = await lookupReferenceUrl(pageUrl, {
+    fetchImpl: async (url) => {
+      if (url === pageUrl) return new Response(html);
+      assert.equal(url, "https://api.crossref.org/works/10.1109%2FACCESS.2022.3214663");
+      return new Response("Unavailable", { status: 503 });
+    }
+  });
+  assert.equal(metadata.title, data.title);
+  assert.equal(metadata.doi, data.doi);
+  assert.deepEqual(metadata.authors, [{ given: "Jane", family: "de Vries", literal: "" }]);
+  const entry = metadataToBibEntry(metadata, suggestCitationKey(metadata));
+  assert.equal(entry.type, "article");
+  assert.equal(entry.fields.journal, "IEEE Access");
+  assert.equal(entry.fields.pages, "100--110");
+  assert.equal(entry.fields.year, "2022");
+});
+
+test("IEEE citation export resolves a stamp link when its article page is blocked or offline", async (t) => {
+  for (const failure of ["forbidden", "offline", "verification"]) {
+    await t.test(failure, async () => {
+      const metadata = await lookupReferenceUrl("https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=9919149", {
+        fetchImpl: async (input, options) => {
+          const url = new URL(input);
+          if (url.pathname === "/document/9919149") {
+            if (failure === "offline") throw new Error("Network unavailable");
+            if (failure === "verification") return new Response('<title></title><script>window.gokuProps = {};</script>', { status: 202 });
+            return new Response("Access denied", { status: 403 });
+          }
+          assert.equal(url.pathname, "/rest/search/citation/format");
+          assert.equal(url.searchParams.get("recordIds"), "9919149");
+          assert.equal(url.searchParams.get("download-format"), "download-bibtex");
+          assert.equal(options.headers.Referer, "https://ieeexplore.ieee.org/document/9919149");
+          return Response.json({ data: "@INPROCEEDINGS{9919149, title={Reliable Links &amp; Routing}, author={Doe, Jane and Wang, Wei}, booktitle={IEEE INFOCOM}, year={2025}, pages={1-10}, doi={10.1109/INFOCOM.2025.1234567}}" });
+        }
+      });
+      assert.equal(metadata.doi, "10.1109/INFOCOM.2025.1234567");
+      assert.equal(metadata.doiDiscovery, "ieee-citation");
+      assert.equal(metadata.title, "Reliable Links & Routing");
+      assert.equal(metadata.authors.length, 2);
+      const entry = metadataToBibEntry(metadata, suggestCitationKey(metadata));
+      assert.equal(entry.key, "doe2025reliable");
+      assert.equal(entry.type, "inproceedings");
+      assert.equal(entry.fields.booktitle, "IEEE INFOCOM");
+      assert.equal(entry.fields.pages, "1--10");
+    });
+  }
+});
+
+test("IEEE metadata remains usable without a DOI when the citation service is unavailable", async () => {
+  const metadata = await lookupReferenceUrl("https://ieeexplore.ieee.org/document/7654321", {
+    fetchImpl: async (url) => {
+      if (url === "https://ieeexplore.ieee.org/document/7654321") {
+        return new Response('<script>xplGlobal.document.metadata = '
+          + JSON.stringify({ articleNumber: "7654321", title: "Satellite Network Scheduling", contentType: "Conferences", publicationTitle: "IEEE INFOCOM", publicationYear: "2025", authors: [{ name: "Jane Doe" }] }) + ';</script>');
+      }
+      return new Response("Unavailable", { status: 503 });
+    }
+  });
+  const entry = metadataToBibEntry(metadata, suggestCitationKey(metadata));
+  assert.equal(entry.type, "inproceedings");
+  assert.equal(entry.fields.author, "Doe, Jane");
+  assert.equal(entry.fields.url, "https://ieeexplore.ieee.org/document/7654321");
+  assert.equal(entry.fields.doi, undefined);
+});
+
+test("IEEE verification pages never become bogus bibliography entries", async (t) => {
+  for (const title of ["", "IEEE Xplore", "IEEE Xplore - System Error", "Access Denied"]) {
+    await t.test(title || "empty challenge title", async () => {
+      await assert.rejects(lookupReferenceUrl("https://ieeexplore.ieee.org/document/9919149", {
+        fetchImpl: async (url) => {
+          if (url.includes("/rest/search/citation/format")) return new Response("Blocked", { status: 418 });
+          assert.equal(url, "https://ieeexplore.ieee.org/document/9919149");
+          return new Response("<title>" + title + "</title>", { status: 202 });
+        }
+      }), /IEEE.*访问验证.*BibTeX/);
+    });
+  }
 });
 
 test("reference API appends an entry to Bib and wires an unreferenced Bib file into main TeX", async () => {
@@ -169,5 +279,60 @@ test("reference API appends an entry to Bib and wires an unreferenced Bib file i
   } finally {
     await stopServer();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("title search uses each selected provider and preserves publication metadata", async (t) => {
+  const title = "Satellite Signal Scaling";
+  const doi = "10.1109/fixture.2025.123";
+  const cases = [
+    {
+      provider: "crossref", host: "api.crossref.org", query: "query.bibliographic",
+      response: () => Response.json({ message: { items: [{
+        title: [title], author: [{ given: "Jane", family: "Doe" }], issued: { "date-parts": [[2025]] },
+        type: "proceedings-article", "container-title": ["IEEE INFOCOM"], DOI: doi
+      }] } })
+    },
+    {
+      provider: "dblp", host: "dblp.org", query: "q",
+      response: () => Response.json({ result: { hits: { hit: [{ info: {
+        title, authors: { author: { text: "Jane Doe" } }, year: "2025", type: "Conference and Workshop Papers",
+        venue: "IEEE INFOCOM", doi
+      } }] } } })
+    },
+    {
+      provider: "semantic", host: "api.semanticscholar.org", query: "query",
+      response: () => Response.json({ data: [{
+        title, authors: [{ name: "Jane Doe" }], year: 2025, publicationTypes: ["Conference"],
+        publicationVenue: { name: "IEEE INFOCOM" }, externalIds: { DOI: doi }
+      }] })
+    },
+    {
+      provider: "arxiv", host: "export.arxiv.org", query: "search_query",
+      response: () => new Response("<feed><entry><id>http://arxiv.org/abs/2501.01234v1</id><title>" + title
+        + "</title><author><name>Jane Doe</name></author><published>2025-01-01</published>"
+        + "<summary>Signal scaling for satellite links.</summary><arxiv:doi>" + doi + "</arxiv:doi></entry></feed>")
+    }
+  ];
+  for (const source of cases) {
+    await t.test(source.provider, async () => {
+      const [entry] = await searchReferenceTitles(title, source.provider, { fetchImpl: async (address) => {
+        const url = new URL(address);
+        assert.equal(url.hostname, source.host);
+        assert.ok(url.searchParams.get(source.query)?.includes(title));
+        return source.response();
+      } });
+      assert.equal(entry.title, title);
+      assert.equal(entry.year, "2025");
+      assert.equal(entry.authors[0].family, "Doe");
+      assert.equal(entry.doi || entry.publishedDoi, doi);
+      if (source.provider === "arxiv") {
+        assert.equal(entry.type, "preprint");
+        assert.equal(entry.eprint, "2501.01234v1");
+      } else {
+        assert.equal(entry.type, "proceedings-article");
+        assert.equal(entry.containerTitle, "IEEE INFOCOM");
+      }
+    });
   }
 });

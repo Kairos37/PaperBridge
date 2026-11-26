@@ -1,0 +1,29 @@
+SyncTeX for the Windows PaperBridge build
+
+Upstream: https://github.com/jlaurens/synctex
+Purpose: the official SyncTeX command-line parser for source/PDF synchronization.
+The upstream source copyright and license are included in LICENSE.txt.
+
+Binary source: the existing local TeX Live 2025 Windows installation,
+D:/Program Files/texlive/2025/bin/windows/synctex.exe.
+TeX Live package: synctex.windows, revision 73796.
+CLI version: 1.5.
+Parser/client version reported by the binary: 1.21.
+Size: 457728 bytes.
+SHA256: d3b1a76ca51baaef4f814bab7c0846de0ea14a471299dcf929bd4f7bc502ef22.
+
+The PE import table lists only SHLWAPI.dll, KERNEL32.dll, and ADVAPI32.dll.
+The copied executable was tested from this resource directory with only the
+Windows and Windows/System32 directories on PATH and no inherited TeX-specific
+environment. `synctex help edit` succeeded and reported big-point coordinates
+(72 units per inch) measured from the upper-left corner of the page.
+
+Upstream build instructions:
+https://github.com/jlaurens/synctex/blob/main/meson/README.md
+TeX Live Windows binary sources and distribution information:
+https://tug.org/texlive/windows.html
+https://tug.org/texlive/copying.html
+
+The Windows packaging filter includes this directory under bin/synctex.
+The macOS build overrides the filter to include only its architecture-specific
+Tectonic binaries; this Windows executable is intentionally excluded there.

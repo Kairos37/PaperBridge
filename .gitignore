@@ -1,11 +1,15 @@
 node_modules/
+public/vendor/collaboration.js
+resources/collaboration-defaults.json
 config.local.json
+/config.local.json.bak
 storage-location.txt
 data/
 projects/
 release/
 source-backups/
-resources/bin/
+resources/bin/*
+!resources/bin/synctex/
 .codex-lrtp-probe/
 .DS_Store
 template/**/*.zip
@@ -21,4 +25,5 @@ template/**/*.pdf
 
 *.png
 !docs/images/*.png
+!public/brand-icon.png
 !resources/icon.png

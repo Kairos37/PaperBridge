@@ -1,0 +1,26 @@
+Editor fonts distributed with PaperBridge
+
+JetBrains Mono Regular (unmodified WOFF2)
+Source: https://github.com/JetBrains/JetBrainsMono
+Downloaded from: https://raw.githubusercontent.com/JetBrains/JetBrainsMono/master/fonts/webfonts/JetBrainsMono-Regular.woff2
+License: JetBrainsMono-OFL.txt (SIL Open Font License 1.1)
+
+Sarasa Mono SC Regular, version 1.0.43 (TTF converted to WOFF2 without subsetting)
+Source: https://github.com/be5invis/Sarasa-Gothic
+Downloaded from: https://github.com/be5invis/Sarasa-Gothic/releases/download/v1.0.43/SarasaMonoSC-TTF-Unhinted-1.0.43.7z
+License: SarasaGothic-LICENSE.txt (SIL Open Font License 1.1)
+
+The editor first uses the corresponding locally installed font when available.
+The bundled files provide the same families when they are not installed.
+These fonts apply to editing controls and do not replace fonts embedded in a PDF.
+
+Translation reading fonts
+
+Inter variable 4.1 (unmodified WOFF2)
+Source: https://rsms.me/inter/
+Release and license: https://github.com/rsms/inter/releases/tag/v4.1
+License: Inter-OFL.txt (SIL Open Font License 1.1)
+
+Noto Sans SC 2.004 (regular weight instanced from TTF and converted to WOFF2)
+Source: https://github.com/notofonts/noto-cjk/tree/Sans2.004/Sans/Variable/TTF/Subset
+License: NotoSansSC-OFL.txt (SIL Open Font License 1.1)

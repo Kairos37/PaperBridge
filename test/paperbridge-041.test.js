@@ -88,6 +88,36 @@ test("table blocks expose one English grid and save edited cells back to TeX", a
   });
 });
 
+test("table formatting survives save, reload, and a later cell edit", async () => {
+  await withProject("paperbridge-table-format-", tablePaper, async ({ projectRoot, request }) => {
+    const initial = await request("/api/document?file=main.tex");
+    const table = initial.tableBlocks[0];
+    const rows = [
+      [String.raw`\textbf{Metric}`, String.raw`\textit{Value}`],
+      [String.raw`A \textit{\textbf{bold & italic}} result`, "50%_gain"]
+    ];
+    await request("/api/table-block", {
+      file: "main.tex", id: table.id, sourceHash: table.sourceHash,
+      startLine: table.startLine, englishRows: rows, deferCompile: true
+    });
+    const reloaded = await request("/api/document?file=main.tex");
+    const updated = reloaded.tableBlocks[0];
+    assert.deepEqual(updated.rows.map((row) => row.cells.map((cell) => cell.editableText)), rows);
+    assert.deepEqual(updated.rows.map((row) => row.cells.map((cell) => cell.text)), [
+      ["Metric", "Value"], ["A bold & italic result", "50%_gain"]
+    ]);
+    rows[1][1] = "75%_gain";
+    await request("/api/table-block", {
+      file: "main.tex", id: updated.id, sourceHash: updated.sourceHash,
+      startLine: updated.startLine, englishRows: rows, deferCompile: true
+    });
+    const content = await fs.readFile(path.join(projectRoot, "main.tex"), "utf8");
+    assert.ok(content.includes(String.raw`\textbf{Metric} & \textit{Value}`));
+    assert.ok(content.includes(String.raw`A \textit{\textbf{bold \& italic}} result & 75\%\_gain`));
+    assert.doesNotMatch(content, /\\textbackslash\{\}(?:textbf|textit)/);
+  });
+});
+
 test("table editing can add or remove rows and columns while keeping TeX structure", async () => {
   await withProject("paperbridge-041-table-shape-", tablePaper, async ({ projectRoot, request }) => {
     const document = await request("/api/document?file=main.tex");

@@ -1,0 +1,294 @@
+/* PaperBridge reference workbench */
+:where(#referencesView, #referenceAddDialog, #referenceInsertDialog, .citation-suggestions, .citation-hover-preview) {
+  --reference-ink: #1f2329;
+  --reference-muted: #646a73;
+  --reference-rule: #e5e7eb;
+  --reference-surface: #fff;
+  --reference-soft: #f6f7f9;
+  --reference-selected: #eaf4ee;
+  --reference-emphasis: #17664f;
+  --reference-mark: #ffedaf;
+  --reference-amber: #8a5717;
+  --reference-amber-bg: #fff4e3;
+  --reference-red: #a9273a;
+  --reference-red-bg: #fdf0f2;
+  --reference-purple: #6d5493;
+  --reference-purple-bg: #f3edf9;
+  --reference-shadow: 0 6px 24px rgb(31 35 41 / 13%);
+}
+
+#referencesView { container: references / inline-size; color: var(--reference-ink); }
+#referencesView > .panel-toolbar { flex: 0 0 auto; min-height: 44px; }
+#referencesView .reference-health {
+  display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center;
+  gap: 2px 6px; padding: 6px 12px; border-bottom: 1px solid var(--reference-rule);
+  background: var(--reference-soft);
+}
+.reference-health-item {
+  min-height: 26px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--reference-ink); font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+.reference-health-item:first-child { font-weight: 650; }
+.reference-health-item.muted { color: var(--reference-muted); }
+.reference-health-item.warning { color: var(--reference-amber); }
+.reference-health-item.danger { color: var(--reference-red); }
+.reference-health-item:hover, .reference-health-item[aria-pressed=true] { background: var(--reference-selected); color: var(--reference-emphasis); }
+#referencesView .references-workbench {
+  display: grid; grid-template-columns: minmax(212px, 0.92fr) minmax(0, 1.08fr); gap: 0; padding: 0;
+  flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--reference-surface);
+}
+#referencesView .references-list-panel {
+  display: flex; flex-direction: column; gap: 0; min-width: 0; min-height: 0;
+  padding: 10px 10px 6px; border-right: 1px solid var(--reference-rule);
+}
+#referencesView .reference-detail-panel {
+  display: block; min-width: 0; min-height: 0; overflow: auto; padding: 16px; background: var(--reference-surface);
+}
+.reference-search-row { display: flex; flex: 0 0 auto; align-items: stretch; min-width: 0; gap: 6px; }
+.reference-search-row .references-search {
+  min-width: 0; flex: 1 1 auto; min-height: 32px; height: 32px; padding: 0 8px; gap: 6px;
+  border: 1px solid var(--reference-rule); border-radius: 5px; background: var(--reference-surface);
+}
+.reference-search-row .references-search input { width: 100%; min-width: 0; flex: 1 1 auto; padding: 0; font-size: 12px; }
+.reference-search-row .references-search > svg { width: 15px; height: 15px; flex: 0 0 15px; }
+body #referencesView .reference-search-row .reference-add-trigger, #referenceInsertDialog .reference-add-trigger {
+  display: inline-flex; gap: 4px; min-height: 32px; padding-inline: 7px; flex: 0 0 auto;
+  align-items: center; justify-content: center; color: var(--reference-emphasis); background: var(--reference-selected);
+  border-radius: 5px; font-size: 12px; white-space: nowrap;
+}
+.reference-add-trigger > svg { width: 15px; height: 15px; }
+.reference-list-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; padding: 7px 0 5px; }
+.reference-list-controls :is(.reference-filter-button, .reference-filter-menu summary, #referenceSort) {
+  height: 26px; min-height: 26px; padding: 0 5px; border: 0; border-radius: 4px;
+  color: var(--reference-muted); background: var(--reference-soft); font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+.reference-list-controls :is(.reference-filter-button, .reference-filter-menu summary):hover,
+.reference-list-controls .reference-filter-button[aria-pressed=true] { background: var(--reference-selected); color: var(--reference-emphasis); }
+.reference-list-controls #referenceSort { min-width: 0; max-width: 100%; }
+#referencesCount { margin-left: auto; font-size: 12px; color: var(--reference-muted); font-variant-numeric: tabular-nums; }
+.reference-filter-menu { position: relative; }
+.reference-filter-menu summary { display: flex; align-items: center; gap: 4px; list-style: none; }
+.reference-filter-menu summary svg { width: 13px; height: 13px; }
+.reference-filter-fields {
+  position: absolute; top: calc(100% + 3px); left: 0; width: 180px; z-index: 6; display: grid; gap: 8px;
+  padding: 10px; border: 1px solid var(--reference-rule); border-radius: 6px;
+  background: var(--reference-surface); box-shadow: var(--reference-shadow); font-size: 12px; color: var(--reference-ink);
+}
+.reference-filter-fields fieldset { margin: 0; min-width: 0; border: 0; padding: 0; }
+.reference-filter-fields legend { padding: 0; margin-bottom: 4px; }
+.reference-filter-fields label { display: grid; gap: 4px; }
+.reference-filter-fields :is(input, select) { min-width: 0; width: 100%; }
+.reference-year-range { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 4px; align-items: center; }
+.reference-filter-context { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 2px 0 4px; font-size: 12px; color: var(--reference-muted); }
+
+#referencesView .references-list { flex: 1 1 auto; min-height: 0; padding: 0; gap: 0; overflow: auto; }
+#referencesView .reference-row {
+  position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 2px;
+  padding: 4px 3px 4px 0; margin: 0; min-width: 0; border: 0; border-bottom: 1px solid var(--reference-rule);
+  border-left: 2px solid transparent; border-radius: 0; background: var(--reference-surface); box-shadow: none;
+}
+#referencesView .reference-row:is(:hover, :focus-within) { background: var(--reference-soft); }
+#referencesView .reference-row.active, #referenceInsertDialog .reference-row.active {
+  border-left-color: var(--reference-emphasis); background: var(--reference-selected);
+}
+:is(#referencesView, #referenceInsertDialog) .reference-row.reference-arrived { animation: reference-arrived 1.1s ease; }
+@keyframes reference-arrived {
+  25% { box-shadow: inset 0 0 0 1px var(--reference-emphasis); }
+  100% { box-shadow: none; }
+}
+#referencesView .reference-row-main {
+  display: grid; grid-template-columns: 29px minmax(0,1fr); align-items: start; gap: 3px; text-align: left;
+  min-width: 0; padding: 5px 2px 5px 3px; border: 0; background: transparent; cursor: pointer; color: var(--reference-ink);
+}
+#referencesView .reference-order, #referenceInsertDialog .reference-order {
+  display: inline-flex; justify-content: center; min-width: 0; height: 19px; align-items: center; padding: 0;
+  font-size: 12px; font-weight: 550; border: 0; background: transparent; color: var(--reference-emphasis); font-variant-numeric: tabular-nums;
+}
+#referencesView .reference-order.uncited, #referenceInsertDialog .reference-order.uncited { color: var(--reference-muted); }
+.reference-row .reference-row-body { display: grid; gap: 3px; min-width: 0; }
+.reference-row .reference-row-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal;
+  overflow: hidden; overflow-wrap: anywhere; line-height: 1.45; font-size: 13px; font-weight: 600;
+}
+.reference-row .reference-row-meta {
+  display: flex; align-items: baseline; gap: 4px; color: var(--reference-muted);
+  min-width: 0; font-size: 12px; line-height: 1.4;
+}
+.reference-row-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-row-meta .reference-meta-dot { flex: 0 0 auto; }
+.reference-status-list { display: flex; flex-wrap: wrap; gap: 3px; }
+.reference-status-tag {
+  padding: 1px 4px; border-radius: 3px; color: var(--reference-amber); background: var(--reference-amber-bg);
+  font-size: 12px; line-height: 1.3; white-space: nowrap;
+}
+.reference-status-tag.unused { color: var(--reference-muted); background: var(--reference-soft); }
+.reference-status-tag.preprint { color: var(--reference-purple); background: var(--reference-purple-bg); }
+.reference-search-context { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--reference-muted); font-size: 12px; }
+.reference-hit { padding: 0; color: inherit; background: var(--reference-mark); }
+.reference-row-actions { display: flex; align-items: start; gap: 0; }
+.reference-row-actions .reference-action, .reference-menu-trigger {
+  display: inline-grid; place-items: center; width: 24px; min-width: 24px; height: 27px; min-height: 27px;
+  padding: 0; border: 0; background: transparent; color: var(--reference-muted); cursor: pointer;
+}
+.reference-menu-trigger { list-style: none; border-radius: 4px; }
+.reference-menu-trigger::-webkit-details-marker, .reference-filter-menu summary::-webkit-details-marker { display: none; }
+.reference-row-menu { position: relative; }
+.reference-row-menu[open] { z-index: 4; }
+.reference-row-menu-items {
+  position: absolute; top: 100%; right: 0; display: grid; width: max-content; min-width: 108px;
+  padding: 4px; border: 1px solid var(--reference-rule);
+  border-radius: 6px; background: var(--reference-surface); box-shadow: var(--reference-shadow);
+}
+.reference-row:nth-last-of-type(-n + 2):not(:nth-of-type(-n + 2)) .reference-row-menu-items { top: auto; bottom: 100%; }
+.reference-row-menu-items .reference-action { display: inline-flex; width: auto; min-width: 100%; justify-content: start; padding: 0 6px; }
+.reference-empty-list { display: grid; gap: 8px; justify-items: center; }
+#referencesView .reference-missing-row { width: 100%; text-align: left; grid-template-columns: 1fr; gap: 2px; padding: 8px; cursor: pointer; }
+#referencesView .references-alerts { flex: 0 0 auto; max-height: 76px; overflow: auto; }
+#referencesView .references-alert { font-size: 12px; padding: 4px 4px 4px 6px; line-height: 1.4; }
+.reference-alert-dismiss svg { width: 13px; height: 13px; }
+
+.reference-action, .reference-source-link, .reference-link {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 27px; padding: 2px 5px; color: var(--reference-ink);
+  text-align: start; border: 0; border-radius: 4px; background: transparent; font-size: 12px; text-decoration: none; cursor: pointer;
+}
+.reference-action :where(svg), .reference-source-link :where(svg), .reference-menu-trigger :where(svg) {
+  width: 15px; height: 15px; stroke-width: 1.5; flex: 0 0 auto;
+}
+.reference-action:hover, .reference-menu-trigger:hover { background: var(--reference-soft); }
+.reference-action-primary { color: var(--reference-emphasis); background: var(--reference-selected); }
+.reference-action-primary:hover { background: var(--reference-selected); text-decoration: underline; }
+.reference-action-danger { color: var(--reference-red); }
+.reference-action-danger:hover { background: var(--reference-red-bg); }
+.reference-source-link, .reference-link { padding-inline: 0; color: var(--reference-emphasis); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.reference-action:disabled { opacity: .45; cursor: default; }
+#referenceDetail .reference-detail-header { gap: 0; padding: 0 0 9px; border-bottom: 1px solid var(--reference-rule); }
+#referenceDetail .reference-detail-header h2 { font-size: 16px; line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
+.reference-detail-authors, #referenceDetail .reference-detail-meta { color: var(--reference-muted); font-size: 12px; line-height: 1.55; margin: 5px 0; }
+.reference-key-line { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin: 6px 0; }
+.reference-key-chip { padding: 3px 5px; border-radius: 4px; color: var(--reference-emphasis); background: var(--reference-selected); font: 12px var(--font-code); overflow-wrap: anywhere; }
+.reference-detail-actions { display: flex; flex-wrap: wrap; gap: 3px; }
+.reference-detail-section { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--reference-rule); }
+#referenceDetail h3 { color: var(--reference-ink); font-size: 13px; margin: 0 0 7px; }
+.reference-empty-citations, .reference-issue-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 3px 7px; margin: 3px 0; font-size: 12px; color: var(--reference-muted); }
+.reference-context-link {
+  display: grid; gap: 3px; width: 100%; margin: 0 0 4px; padding: 5px 6px; color: var(--reference-ink);
+  border: 0; border-radius: 4px; text-align: start; background: var(--reference-soft); cursor: pointer;
+}
+.reference-context-link:hover { background: var(--reference-selected); }
+.reference-context-meta { display: flex; gap: 5px; min-width: 0; align-items: center; color: var(--reference-muted); font-size: 12px; }
+.reference-context-meta strong { white-space: nowrap; color: var(--reference-emphasis); font-weight: 550; }
+.reference-context-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-context-meta svg { width: 13px; height: 13px; }
+.reference-context-sentence, .reference-missing-context p { display: block; color: var(--reference-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.reference-preview-caption { color: var(--reference-muted); font-size: 12px; margin: 0 0 5px; }
+.reference-printed-preview {
+  display: flex; gap: 6px; color: var(--reference-ink); background: var(--reference-soft);
+  border-radius: 5px; padding: 9px; line-height: 1.55; font: 13px/1.55 Georgia, "Songti SC", SimSun, serif; overflow-wrap: anywhere;
+}
+.reference-print-number { flex: 0 0 auto; }
+.reference-notes { display: grid; justify-items: start; gap: 6px; }
+.reference-notes-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.reference-notes-tags:empty { display: none; }
+.reference-note-tag { min-height: 22px; border: 0; border-radius: 3px; background: var(--reference-selected); color: var(--reference-emphasis); cursor: pointer; font-size: 12px; }
+.reference-note-field, .reference-notes details, .reference-tag-input { width: 100%; }
+.reference-note-field { display: grid; gap: 3px; color: var(--reference-muted); font-size: 12px; }
+.reference-note-status { color: var(--reference-muted); font-size: 12px; }
+.reference-bib-details, .reference-advanced { color: var(--reference-muted); font-size: 12px; }
+.reference-bib-details > summary, .reference-advanced > summary { cursor: pointer; padding: 4px 0; }
+.reference-field-details { margin: 8px 0; }
+#referenceDetail .reference-field-list { display: grid; grid-template-columns: max-content minmax(0,1fr); column-gap: 8px; margin: 5px 0; }
+#referenceDetail .reference-field-list :is(dt,dd) { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+#referenceDetail .reference-field-list dt { color: var(--reference-muted); }
+#referenceDetail .reference-bib-source { max-height: 220px; overflow: auto; margin-top: 5px; font-size: 12px; }
+
+#referenceAddDialog { width: min(660px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); color: var(--reference-ink); }
+#referenceAddDialog .reference-add-form { min-height: 0; max-height: calc(100dvh - 28px); }
+#referenceAddDialog .reference-add-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 16px; gap: 9px; }
+#referenceAddDialog .dialog-header { align-items: center; }
+#referenceAddDialog h2 { margin: 0; font-size: 16px; }
+.reference-import-methods { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 3px; background: var(--reference-soft); border-radius: 5px; }
+.reference-import-methods button {
+  min-height: 29px; border: 0; border-radius: 4px; padding: 3px 7px; background: transparent; color: var(--reference-muted); white-space: nowrap; cursor: pointer; font-size: 12px;
+}
+.reference-import-methods button[aria-pressed=true], .reference-import-methods button:hover { color: var(--reference-emphasis); background: var(--reference-selected); }
+#referenceAddDialog :is(input:not([type=checkbox]), textarea, select),
+#referencesView .reference-note-field :is(input, textarea), #referencesView .reference-tag-input,
+.reference-filter-fields :is(input, select) {
+  min-height: 30px; padding: 5px 7px; border: 1px solid var(--reference-rule); border-radius: 5px;
+  min-width: 0; color: var(--reference-ink); background: var(--reference-surface); font-size: 12px;
+}
+#referenceAddDialog textarea { width: 100%; resize: vertical; line-height: 1.5; }
+#referenceAddDialog #referenceAddUrl { width: 100%; }
+#referenceAddDialog .reference-title-lookup { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.reference-title-lookup input { flex: 1 1 190px; }
+.reference-upload-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px; color: var(--reference-muted); font-size: 12px; }
+.reference-upload-choice svg { width: 16px; height: 16px; }
+#referenceAddDialog .reference-add-status { padding: 6px 8px; white-space: pre-wrap; border: 0; font-size: 12px; }
+.reference-add-status.success { color: var(--reference-emphasis); background: var(--reference-selected); }
+.reference-add-status.waiting { color: var(--reference-muted); background: var(--reference-soft); }
+.reference-import-candidates { max-height: 185px; min-height: 0; overflow: auto; border: 1px solid var(--reference-rule); border-radius: 5px; }
+.reference-import-option { display: flex; min-width: 0; align-items: center; gap: 6px; padding: 3px 6px; border-bottom: 1px solid var(--reference-rule); }
+.reference-import-option:last-child { border-bottom: 0; }
+.reference-import-option.active { background: var(--reference-selected); }
+.reference-import-option-title { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; min-height: 34px; text-align: start; color: var(--reference-ink); border: 0; background: transparent; padding: 3px; cursor: pointer; font-size: 12px; }
+.reference-import-option-title span { color: var(--reference-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.reference-import-preview { padding: 9px; border: 1px solid var(--reference-rule); border-radius: 6px; background: var(--reference-soft); }
+#referenceImportIdentity h3 { font-size: 14px; line-height: 1.45; margin: 0 0 3px; overflow-wrap: anywhere; }
+#referenceImportIdentity p { margin: 3px 0; font-size: 12px; line-height: 1.4; }
+.reference-key-field, .reference-add-grid label, .reference-bib-target, .reference-manual-field, .reference-manual-fields > label { display: grid; gap: 4px; font-size: 12px; color: var(--reference-muted); }
+.reference-key-field { grid-template-columns: max-content minmax(0,1fr); align-items: center; gap: 8px; margin: 7px 0; }
+.reference-import-warnings { color: var(--reference-amber); font-size: 12px; line-height: 1.45; }
+.reference-import-warnings p { margin: 3px 0; }
+.reference-input-error { color: var(--reference-red); }
+.reference-duplicate-line, .reference-confirm-duplicate { display: flex; align-items: center; gap: 4px; }
+.reference-advanced .reference-add-grid, #referenceManualFields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin-top: 5px; }
+.reference-manual-field.wide { grid-column: 1 / -1; }
+#referenceImportMultipleFiles:empty { display: none; }
+#referenceAddDialog .reference-add-bib { min-height: 105px; font: 12px/1.55 var(--font-code); }
+
+.reading-reference-action {
+  display: inline; min-height: 0; padding: 1px 5px; border: 0; cursor: pointer; vertical-align: baseline;
+}
+.reading-reference-action:hover { text-decoration: underline; text-underline-offset: 2px; }
+.syntax-citation { background: #eaf4ee; color: #17664f; border-radius: 3px; }
+.citation-caret-mirror {
+  position: fixed; left: 0; top: 0; box-sizing: border-box; height: auto; border: 0;
+  overflow: visible; visibility: hidden; pointer-events: none;
+}
+.citation-suggestions, .citation-hover-preview {
+  position: fixed; z-index: 60; width: min(320px, calc(100vw - 16px)); padding: 5px; border: 1px solid var(--reference-rule);
+  border-radius: 6px; background: var(--reference-surface); box-shadow: var(--reference-shadow); color: var(--reference-ink);
+}
+.citation-suggestions { max-height: min(265px, 43vh); overflow: auto; }
+.citation-suggestion { display: grid; gap: 2px; padding: 6px; border-radius: 4px; cursor: pointer; line-height: 1.35; font-size: 12px; }
+.citation-suggestion:is(.active,:hover) { background: var(--reference-selected); }
+.citation-suggestion-meta, .citation-suggestion-empty { font-size: 12px; color: var(--reference-muted); }
+.citation-suggestion-empty { margin: 5px; }
+.citation-suggestion code, .citation-hover-preview code { font: 12px var(--font-code); color: var(--reference-emphasis); overflow-wrap: anywhere; }
+.citation-hover-preview { pointer-events: none; display: grid; gap: 4px; padding: 9px 10px; font-size: 12px; line-height: 1.45; }
+.citation-hover-hint { color: var(--reference-muted); }
+
+@container references (max-width: 490px) {
+  #referencesView .references-workbench { grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(125px, 47%) minmax(0,1fr); }
+  #referencesView .references-list-panel { border-right: 0; border-bottom: 1px solid var(--reference-rule); }
+  #referencesView .reference-detail-panel { padding: 10px; }
+  #referencesView .references-alerts { max-height: 36px; }
+}
+@media (max-width: 620px) {
+  .workspace.references-open { grid-template-rows: minmax(0, 36%) 4px minmax(0, 1fr); }
+  .workspace.references-open > .sidebar { bottom: 64%; }
+  #referencesView .reference-health { gap: 1px 3px; padding: 2px 5px; }
+  .reference-health-item { min-height: 21px; }
+  #referenceAddDialog .reference-add-body { padding-inline: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(#referencesView, #referenceInsertDialog) .reference-row.reference-arrived { animation: none; }
+}
+
+
+.reference-row-meta > span:first-child { flex: 0 0 auto; max-width: 52%; }
+.reference-row-meta .reference-meta-venue { flex: 0 1 auto; }
+.reference-row-meta .reference-meta-year { flex: 0 0 auto; }
+.reference-list-controls #referenceSort { width: 107px; }
+.reference-missing-repair { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 5px; }
+.reference-missing-repair select { max-width: 100%; min-width: 0; min-height: 27px; font-size: 12px; }

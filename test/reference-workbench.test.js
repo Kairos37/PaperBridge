@@ -5,12 +5,16 @@ import path from "node:path";
 import test from "node:test";
 import { startServer, stopServer } from "../server.js";
 
-test("reference workbench preserves the current left editor and supports citation drag-and-drop", async () => {
+test("reference workbench opens on the left without replacing the editor or PDF and supports citation drag-and-drop", async () => {
   const appSource = await fs.readFile(new URL("../public/app.js", import.meta.url), "utf8");
   const styles = await fs.readFile(new URL("../public/styles.css", import.meta.url), "utf8");
   const html = await fs.readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  const workspaceStyles = await fs.readFile(new URL("../public/review.css", import.meta.url), "utf8");
 
-  assert.match(html, /data-mode="source"[^>]*aria-pressed="true">编辑<\/button>[\s\S]*data-mode="edit"[^>]*>翻译<\/button>[\s\S]*data-mode="references"[^>]*>文献<\/button>/);
+  assert.match(html, /class="activity-bar"[^>]*aria-label="工作区面板"/);
+  assert.match(html, /data-mode="source"[^>]*aria-pressed="true">源码<\/button>/);
+  assert.match(html, /data-mode="edit"[^>]*>中英对照<\/button>/);
+  assert.match(html, /class="sidebar-reference-button mode-button"[^>]*data-mode="references"/);
   assert.doesNotMatch(html, /data-mode="format"/);
   assert.match(html, /class="editor-panel hidden" id="editView"/);
   assert.match(html, /class="editor-panel source-panel" id="sourceView"/);
@@ -23,31 +27,34 @@ test("reference workbench preserves the current left editor and supports citatio
   );
   assert.doesNotMatch(referenceToggle, /state\.mode\s*=/);
   assert.match(appSource, /elements\.editView\.classList\.toggle\("hidden", mode !== "edit"\)/);
-  assert.match(appSource, /elements\.previewPanel\.classList\.toggle\("hidden", state\.referencesOpen\)/);
-  assert.match(html, /id="closeReferencesButton"[^>]*aria-label="关闭参考文献，返回 PDF"/);
+  assert.doesNotMatch(referenceToggle, /elements\.previewPanel\.classList\.toggle\("hidden"/);
+  assert.match(html, /id="closeReferencesButton"[^>]*aria-label="关闭参考文献工作台"/);
   assert.doesNotMatch(html, /id="refreshReferencesButton"|id="addReferenceButton"|id="insertSelectedReferenceButton"/);
   assert.match(html, /id="referencesSearch"[^>]*placeholder="搜索 DOI、标题、作者、年份"/);
   assert.match(html, /id="referenceAddDialog"/);
   assert.match(html, /id="referenceAddUrl"[^>]*type="text"/);
   assert.match(html, /id="referenceAddForm"[^>]*novalidate/);
   assert.match(html, /id="referenceAddBib"/);
-  assert.match(appSource, /api\("\/api\/references\/lookup"/);
-  assert.match(appSource, /api\("\/api\/references\/add"/);
-  assert.match(appSource, /elements\.referenceAddForm\.noValidate\s*=\s*true/);
-  assert.match(appSource, /function maybeOpenReferenceAddDialogForSearch\(\)/);
-  assert.match(appSource, /state\.referenceAutoAddQuery === query/);
-  assert.match(appSource, /openReferenceAddDialog\(query\)/);
+  const workbenchUi = await fs.readFile(new URL("../public/reference-workbench.js", import.meta.url), "utf8");
+  const importer = await fs.readFile(new URL("../public/reference-import-dialog.js", import.meta.url), "utf8");
+  assert.match(importer, /"\/api\/references\/lookup"/);
+  assert.match(importer, /api\("\/api\/references\/add"/);
+  assert.match(html, /id="referencesSearch"[\s\S]{0,320}id="referenceAddButton"[^>]*aria-label="新增参考文献"/);
+  assert.match(html, /id="referenceInsertSearch"[\s\S]{0,360}id="referenceInsertAddButton"[^>]*aria-label="新增参考文献"/);
+  assert.match(workbenchUi, /byId\("referenceAddButton"\)\.addEventListener\("click", \(\) => importer\.open\(search\.value\)\)/);
+  assert.match(workbenchUi, /byId\("referenceInsertAddButton"\)\.addEventListener\("click", \(\) => importer\.open\(insertSearch\.value\)\)/);
+  assert.match(workbenchUi, /search\.addEventListener\("input", refilter\)/);
   assert.match(appSource, /elements\.closeReferencesButton\.addEventListener\("click", \(\) => setReferencesOpen\(false\)\)/);
-  assert.match(appSource, /row\.draggable = true/);
-  assert.match(appSource, /event\.dataTransfer\.setData\(CITATION_DRAG_TYPE, entry\.key\)/);
-  assert.match(appSource, /event\.dataTransfer\.setData\("text\/plain", `\\\\cite\{\$\{entry\.key\}\}`\)/);
+  assert.match(workbenchUi, /row\.draggable = true/);
+  assert.match(workbenchUi, /event\.dataTransfer\.setData\(dragType, entry\.key\)/);
+  assert.match(workbenchUi, /event\.dataTransfer\.setData\("text\/plain", "\\\\cite\{" \+ entry\.key \+ "\}"\)/);
   assert.match(appSource, /textarea\.addEventListener\("dragover"/);
   assert.match(appSource, /textarea\.addEventListener\("drop"/);
   assert.match(appSource, /function textareaCaretOffsetFromPoint/);
   assert.match(appSource, /event\.preventDefault\(\);[\s\S]{0,180}textareaCaretOffsetFromPoint\(textarea, event\.clientX, event\.clientY\)/);
   assert.match(appSource, /insertCitationIntoTarget\(textarea, key, offset\)/);
   assert.match(appSource, /textarea\.addEventListener\("contextmenu", \(event\) => openCitationContextMenu/);
-  assert.match(styles, /\.references-panel\s*\{[^}]*grid-column: 4;[^}]*grid-row: 1;/s);
+  assert.match(workspaceStyles, /\.workspace\.references-open > #referencesView\s*\{[^}]*grid-column: 2;[^}]*grid-row: 1;/);
   assert.match(styles, /textarea\.citation-drop-target/);
 });
 
@@ -130,7 +137,9 @@ test("reference workbench lists Bib entries by first citation order and reports 
       "adaptive_links_2025",
       "beacon_duplicate_2024"
     ]);
-    assert.equal(workbench.entries[0].methodKeyword, "beacon_scheduling");
+    assert.equal(workbench.entries[0].authors[0].family, "Researcher");
+    assert.equal(workbench.entries[0].locations[0].line, 4);
+    assert.match(workbench.entries[0].locations[0].context, /beacon method/);
     assert.equal(workbench.entries[0].venue, "ACM Transactions on Networking");
     assert.deepEqual(workbench.missing.map((item) => item.key), ["missing_2026"]);
     assert.deepEqual(workbench.unused, ["beacon_duplicate_2024"]);

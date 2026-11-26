@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { startServer, stopServer } from "../server.js";
 
 test("TeX source API saves atomically, rejects stale edits, and retains three backups", async () => {
@@ -154,7 +155,7 @@ test("TeX source editor protects environment end lines from accidental line merg
   assert.match(appJs, /tabularx/);
 });
 
-test("desktop workbench keeps one current project, syntax-highlighted TeX, and a paper-like fast preview", async () => {
+test("desktop workbench keeps one current project, syntax-highlighted TeX, and formal PDF preview", async () => {
   const [indexHtml, appJs, styles] = await Promise.all([
     fs.readFile(path.join(process.cwd(), "public", "index.html"), "utf8"),
     fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8"),
@@ -168,40 +169,108 @@ test("desktop workbench keeps one current project, syntax-highlighted TeX, and a
   assert.match(indexHtml, /id="sourceFocusButton"/);
   assert.match(appJs, /function renderProjectSwitcherMenu/);
   assert.match(appJs, /function latexSourceHighlightHtml/);
-  assert.match(appJs, /function fastPreviewPaperHeaderMarkup/);
+  assert.match(appJs, /previewMode:\s*"pdf"/);
+  assert.match(indexHtml, /id="previewModeLabel">正式 PDF<\/span>/);
+  assert.doesNotMatch(indexHtml, /快速预览|Markdown 实时预览/);
+  assert.doesNotMatch(appJs, /scheduleFastPreview|scheduleMarkdownPreview/);
   assert.match(styles, /\.syntax-command\s*\{\s*color:\s*var\(--code-command\)/);
   assert.match(styles, /\.syntax-comment\s*\{\s*color:\s*var\(--code-comment\)/);
-  assert.match(styles, /\.fast-preview-document\s*\{[\s\S]*font-family:\s*var\(--font-paper\)/);
+  assert.match(appJs, /function renderPdf/);
 });
 
-test("Markdown files open as editable source with a live preview and no LaTeX compilation", async () => {
-  const [packageJson, indexHtml, appJs, styles, serverJs] = await Promise.all([
-    fs.readFile(path.join(process.cwd(), "package.json"), "utf8").then(JSON.parse),
+test("Markdown files remain editable while the right panel keeps the compiled paper PDF", async () => {
+  const [indexHtml, appJs, styles, serverJs] = await Promise.all([
     fs.readFile(path.join(process.cwd(), "public", "index.html"), "utf8"),
     fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8"),
     fs.readFile(path.join(process.cwd(), "public", "styles.css"), "utf8"),
     fs.readFile(path.join(process.cwd(), "server.js"), "utf8")
   ]);
 
-  assert.equal(typeof packageJson.dependencies.marked, "string");
   assert.match(serverJs, /discoverEditableMarkdownFiles/);
-  assert.match(serverJs, /app\.use\("\/vendor\/marked"/);
   assert.match(indexHtml, /id="sourceViewTitle"/);
   assert.match(indexHtml, /id="previewTitle"/);
-  assert.match(appJs, /import \{ marked \} from "\/vendor\/marked\/marked\.esm\.js"/);
-  assert.match(appJs, /function renderMarkdownPreview/);
-  assert.match(appJs, /marked\.parse\(source\.content, \{ gfm: true, breaks: false \}\)/);
-  assert.match(appJs, /if \(isMarkdownFile\(\)\) \{[\s\S]*scheduleMarkdownPreview\(state\.sourceFile, 80\);[\s\S]*scheduleSourceAutosave\(\)/);
-  assert.match(appJs, /if \(isMarkdownFile\(source\.file\)\) scheduleMarkdownPreview\(source\.file, 0\)/);
-  assert.match(appJs, /if \(isMarkdownFile\(requestedFile\)\) scheduleMarkdownPreview\(requestedFile, 0\)/);
-  assert.match(styles, /\.markdown-preview-document\s*\{/);
-  assert.match(styles, /\.preview-panel\[data-preview-mode="markdown"\][\s\S]*#previewCompileButton/);
+  const loadStart = appJs.indexOf("async function loadSourceFile");
+  const loadBlock = appJs.slice(loadStart, appJs.indexOf("function scheduleSourceAutosave", loadStart));
+  assert.match(loadBlock, /elements\.sourceEditor\.value = source\.content/);
+  assert.doesNotMatch(loadBlock, /renderMarkdownPreview|renderFastPreview|compilePaper\(|\/api\/compile/);
+  assert.doesNotMatch(appJs, /scheduleMarkdownPreview/);
   assert.match(styles, /\.source-panel\.markdown-source[\s\S]*#modularizeButton/);
   assert.match(appJs, /function createFileExtension/);
   assert.match(indexHtml, /没有扩展名时默认创建 \.tex 文件/);
   assert.match(appJs, /insertionField\?\.classList\.toggle\("hidden", !isTex\)/);
   assert.match(serverJs, /if \(!path\.posix\.extname\(normalized\)\) normalized \+= "\.tex"/);
   assert.match(serverJs, /NEW_SOURCE_EXTENSIONS = new Set\(\["\.tex", "\.md", "\.markdown"\]\)/);
+});
+
+test("opening a project consumes one automatic compile and ordinary refreshes do not compile again", async () => {
+  const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
+  const start = appJs.indexOf("async function compileOpenedProject()");
+  const implementation = appJs.slice(start, appJs.indexOf("async function compilePaper", start));
+  const state = { compileOnOpenPending: true, project: { config: { mainTex: "main.tex" } }, compileInFlight: false };
+  let calls = 0;
+  const context = vm.createContext({ state, compilePaper: async ({ quiet }) => {
+    assert.equal(quiet, true);
+    calls += 1;
+  } });
+  vm.runInContext(implementation, context);
+  await context.compileOpenedProject();
+  await context.compileOpenedProject();
+  assert.equal(calls, 1);
+  assert.equal(state.compileOnOpenPending, false);
+
+  state.compileOnOpenPending = true;
+  state.compileInFlight = true;
+  await context.compileOpenedProject();
+  assert.equal(calls, 1);
+  assert.equal(state.compileOnOpenPending, true);
+  state.compileInFlight = false;
+  await context.compileOpenedProject();
+  assert.equal(calls, 2);
+  state.compileOnOpenPending = true;
+  state.project.setupRequired = true;
+  await context.compileOpenedProject();
+  assert.equal(calls, 2);
+  assert.match(appJs, /\["\/api\/project\/open", "\/api\/setup"\]\.includes\(url\)\)\s*\{\s*state\.compileOnOpenPending = true/);
+});
+
+test("usable PDF builds suppress warnings and fatal failures retain source-linked error reporting", async () => {
+  const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
+  const start = appJs.indexOf("function updateBuild(build)");
+  const implementation = appJs.slice(start, appJs.indexOf("async function refreshProject", start));
+  const warningCalls = [];
+  const toasts = [];
+  let diagnoses = 0;
+  let failures = 0;
+  const context = vm.createContext({
+    state: { project: {}, previewMode: "pdf" },
+    elements: {
+      previewPanel: { classList: { remove() {} } },
+      buildDrawer: { classList: { remove() {} } }
+    },
+    updatePdf() {},
+    reviewCenter: { invalidate() {} },
+    updateWarnings: (...args) => warningCalls.push(args),
+    updateTranslationBuildLabel() {},
+    clearCompileDiagnosis() {},
+    invalidatePdfNavigationIndex() {},
+    renderCompileFailure: () => { failures += 1; },
+    toast: (message) => toasts.push(message),
+    diagnoseBuild: async () => { diagnoses += 1; }
+  });
+  vm.runInContext(implementation, context);
+  const nonBlocking = ["Overfull box", "Unicode dash recovered"];
+  context.updateBuild({ success: true, previewAvailable: true, pdf: { exists: true }, warnings: nonBlocking, errors: [] });
+  context.updateBuild({ success: false, previewAvailable: true, pdf: { exists: true }, warnings: nonBlocking, errors: ["recoverable"] });
+  assert.ok(warningCalls.every((args) => args.every((messages) => messages.length === 0)));
+  assert.equal(toasts.length, 0);
+  assert.equal(diagnoses, 0);
+  assert.equal(failures, 0);
+
+  context.updateBuild({ success: false, previewAvailable: false, pdf: { exists: false }, errors: ["Undefined control sequence"] });
+  assert.equal(warningCalls.at(-1)[2][0], "Undefined control sequence");
+  assert.equal(toasts.length, 1);
+  assert.equal(diagnoses, 1);
+  assert.equal(failures, 1);
 });
 
 test("TeX source save avoids blocking on a full project refresh", async () => {
@@ -252,7 +321,7 @@ test("current TeX translation continues as a background file job after switching
   assert.match(block, /file:\s*translationFile/);
   assert.match(block, /if \(state\.currentFile === translationFile\)/);
   assert.match(appJs, /state\.currentDocument = null;[\s\S]{0,140}renderFileTranslationProgress\(file\)/);
-  assert.match(appJs, /renderFileTranslationProgress\(state\.currentFile\)/);
+  assert.match(appJs, /function renderFileTranslationProgress\(preferredFile[\s\S]*?state\.fileTranslationJobs\.get\(state\.currentFile\)/);
 });
 
 test("paragraph translation clicks enqueue jobs instead of waiting for the current request", async () => {
@@ -344,16 +413,12 @@ test("TeX source changes autosave without compiling and refresh the bilingual do
   assert.match(appJs, /await refreshLoadedSourceFromDisk\(result\.document\.file\)/);
 });
 
-test("paragraph comment UI defers compilation unless auto compile is enabled", async () => {
+test("paragraph comment UI saves without triggering compilation", async () => {
   const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
-  const serverJs = await fs.readFile(path.join(process.cwd(), "server.js"), "utf8");
   const commentStart = appJs.indexOf('api("/api/segment/comment"');
   const commentBlock = appJs.slice(commentStart, appJs.indexOf("});", commentStart));
-  assert.match(commentBlock, /deferCompile:\s*state\.project\?\.config\?\.autoCompile !== true/);
-  const serverStart = serverJs.indexOf("async function commentParagraph");
-  const serverBlock = serverJs.slice(serverStart, serverJs.indexOf("async function saveMathBlock", serverStart));
-  assert.match(serverBlock, /deferCompile = true/);
-  assert.match(serverBlock, /build: deferCompile \? null : await maybeCompile/);
+  assert.match(commentBlock, /deferCompile:\s*true/);
+  assert.doesNotMatch(commentBlock, /autoCompile|\/api\/compile/);
 });
 
 test("paragraph comments are exposed from the selection context menu instead of the row toolbar", async () => {
@@ -385,30 +450,18 @@ test("table editor exposes a single English grid with row and column context act
   assert.match(styles, /\.table-cell-selected/);
 });
 
-test("PDF double-click navigation constrains matches by page text and source order", async () => {
+test("PDF and source double-click navigation use SyncTeX coordinates in both directions", async () => {
   const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
-  const matcherStart = appJs.indexOf("function scoreNavigationText(");
-  const matcherBlock = appJs.slice(matcherStart, appJs.indexOf("async function getPdfParagraphIndex", matcherStart));
-  const queryStart = appJs.indexOf("function extractPdfNavigationQuery(");
-  const queryBlock = appJs.slice(queryStart, appJs.indexOf("function highlightLocatedSegment", queryStart));
-  const locateStart = appJs.indexOf("async function locatePdfSelection(");
-  const locateBlock = appJs.slice(locateStart, appJs.indexOf("async function locateFastPreviewSelection", locateStart));
-  const captionMatch = locateBlock.indexOf("getPdfCaptionIndex()");
-  const paragraphMatch = locateBlock.indexOf("getPdfParagraphIndex()");
-
-  assert.match(matcherBlock, /scoreNavigationPageEvidence/);
-  assert.match(matcherBlock, /scoreNavigationPosition/);
-  assert.match(matcherBlock, /captionReliable/);
-  assert.match(matcherBlock, /positionPenalty/);
-  assert.match(queryBlock, /pageText:\s*items\.filter\(Boolean\)\.join\(" "\)/);
-  assert.match(queryBlock, /state\.pdfDocument\?\.numPages\s*\|\|\s*state\.project\?\.pdf\?\.pages/);
-  assert.match(appJs, /positionRatio:\s*entries\.length <= 1 \? 0 : index \/ denominator/);
-  assert.match(appJs, /function extractLatexCaptions/);
-  assert.match(appJs, /function getPdfCaptionIndex/);
-  assert.ok(captionMatch >= 0 && paragraphMatch >= 0 && captionMatch < paragraphMatch);
-  assert.match(locateBlock, /const navigationScope = \{[\s\S]*page:\s*query\.page[\s\S]*pageText:\s*query\.pageText/);
-  assert.match(locateBlock, /findBestNavigationMatch\(query\.context,\s*query\.selectedText,\s*await getPdfCaptionIndex\(\),\s*\{[\s\S]*caption:\s*true/);
-  assert.match(locateBlock, /findBestNavigationMatch\(query\.context,\s*query\.selectedText,\s*await getPdfParagraphIndex\(\),\s*navigationScope\)/);
+  const start = appJs.indexOf("async function locatePdfSelection(");
+  const block = appJs.slice(start, appJs.indexOf("async function locateFastPreviewSelection", start));
+  assert.ok(block.includes('api("/api/synctex/inverse"'));
+  assert.ok(block.includes('api("/api/synctex/forward"'));
+  assert.ok(block.includes("viewport.convertToPdfPoint"));
+  assert.ok(block.includes("viewport.convertToViewportPoint"));
+  assert.ok(block.includes("openSourceLocation(location.file, location.line)"));
+  assert.ok(block.includes('marker.className = "pdf-source-highlight"'));
+  assert.ok(appJs.includes('addEventListener("dblclick", () => void locateSourceSelection())'));
+  assert.doesNotMatch(block, /findBestNavigationMatch|getPdfParagraphIndex|getPdfCaptionIndex/);
 });
 
 test("failed compilation replaces stale PDF navigation with visible source-linked errors", async () => {
@@ -447,13 +500,13 @@ test("TeX source navigation and search visibly pulse the located selection", asy
   assert.match(styles, /@keyframes fast-preview-located-pulse/);
 });
 
-test("bilingual paragraph rows resize to show the complete Chinese draft", async () => {
+test("visible bilingual editors grow independently with their source text", async () => {
   const appJs = await fs.readFile(path.join(process.cwd(), "public", "app.js"), "utf8");
   const fitStart = appJs.indexOf("function fitSegmentRow");
   const fitBlock = appJs.slice(fitStart, appJs.indexOf("function applyEditorPreferences", fitStart));
 
-  assert.match(fitBlock, /Math\.ceil\(chinese\.scrollHeight\) \+ 4/);
-  assert.match(fitBlock, /english\.style\.height = `\$\{height\}px`/);
+  assert.match(fitBlock, /segment-edit-surface:not\(\[hidden\]\) textarea/);
+  assert.match(fitBlock, /Math\.ceil\(editor\.scrollHeight\)/);
   assert.match(fitBlock, /new ResizeObserver\(\(\) => fitAllSegmentRows\(\)\)/);
   assert.match(fitBlock, /observe\(elements\.segmentList\)/);
   assert.match(appJs, /function applyWorkspaceSplit[\s\S]*fitAllSegmentRows\(\)[\s\S]*schedulePdfPanelResize/);

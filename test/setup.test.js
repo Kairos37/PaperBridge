@@ -164,3 +164,37 @@ test("a fatal rebuild invalidates an older PDF instead of exposing it as current
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("a newly generated PDF remains previewable after a recoverable Unicode dash error", async (t) => {
+  const dependencies = await getDependencyStatus();
+  if (dependencies.compiler === "missing") {
+    t.skip("No LaTeX compiler is available in this environment.");
+    return;
+  }
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperbridge-unicode-dash-build-"));
+  try {
+    await fs.writeFile(path.join(root, "main.tex"), [
+      "\\documentclass{article}", "\\begin{document}",
+      "\\PackageError{inputenc}{Unicode character dash (U+2011)}{Recoverable hyphen diagnostic}",
+      "A nonbreaking hyphen in satellite\u2011network text must not hide an otherwise valid PDF.",
+      "\\end{document}"
+    ].join("\n"), "utf8");
+    const build = await compileProject(root, "main.tex");
+    assert.equal(build.success, true);
+    assert.equal(build.previewAvailable, true);
+    assert.equal(build.pdf.exists, true);
+    assert.equal(build.errors.length, 0);
+    assert.ok(build.warnings.some((warning) => /Unicode character.+U\+2011/.test(warning)));
+    const previousPdf = build.pdf;
+    // Explicit compilation must also work after latexmk records the nonzero
+    // result from a recoverable diagnostic on the previous invocation.
+    const repeated = await compileProject(root, "main.tex");
+    assert.equal(repeated.success, true);
+    assert.equal(repeated.previewAvailable, true);
+    assert.notEqual(repeated.pdf.updatedAt, previousPdf.updatedAt);
+  } finally {
+    assert.equal(path.dirname(root), os.tmpdir());
+    assert.ok(path.basename(root).startsWith("paperbridge-unicode-dash-build-"));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

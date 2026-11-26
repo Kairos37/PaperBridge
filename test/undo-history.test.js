@@ -131,8 +131,14 @@ test("desktop UI exposes project undo and saves before exiting", async () => {
   assert.match(appJs, /event\.key\.toLowerCase\(\) !== "z"/);
   assert.match(appJs, /function shouldUseNativeTextUndo\(target\)/);
   assert.match(appJs, /if \(shouldUseNativeTextUndo\(target\)\) return;/);
-  assert.match(appJs, /editable === elements\.sourceEditor\) return state\.sourceDirty/);
-  assert.match(appJs, /\.segment-textarea, \.math-source-editor/);
+  const nativeUndoStart = appJs.indexOf("function shouldUseNativeTextUndo(target)");
+  const nativeUndoEnd = appJs.indexOf("async function waitForPendingSaves", nativeUndoStart);
+  const nativeUndo = new Function(`${appJs.slice(nativeUndoStart, nativeUndoEnd)}; return shouldUseNativeTextUndo;`)();
+  for (const editor of ["source", "paragraph", "table", "math"]) {
+    assert.equal(nativeUndo({ closest: () => ({ editor }) }), true, `${editor} retains text undo after autosave`);
+  }
+  assert.equal(nativeUndo({ closest: () => null }), false);
+  assert.equal(nativeUndo(null), false);
   assert.match(appJs, /Ctrl\+Z/);
   assert.match(appJs, /window\.paperBridgeDesktop\?\.onCloseRequest\?\.\(handleDesktopCloseRequest\)/);
   assert.match(appJs, /api\("\/api\/undo\/commit"/);
