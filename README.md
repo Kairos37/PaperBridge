@@ -1,189 +1,114 @@
 # PaperBridge
 
-PaperBridge 是一个运行在 Windows 本地的中英文 LaTeX 论文修改工具。
+PaperBridge 是一款在 Windows 本地运行的中英对照 LaTeX 论文编辑器。中文工作稿和英文源码按段落对应，你可以先用中文推敲表述，再更新英文 LaTeX、编译检查 PDF。收到审阅人发回的 PDF 后，还可以把批注导回项目继续修改。
 
-它适合需要反复修改英文论文、但更习惯先用中文组织和调整内容的研究者。使用时可以修改中文工作稿，由 AI 更新对应的英文 LaTeX，并随时在 PDF 预览中检查英文版本的实际排版。英文 LaTeX 始终是最终排版依据，因此页数变化、公式或引用异常、段落换页，以及图片和表格位置变化都能及时发现。
+[下载 Windows 安装包](https://github.com/Kairos37/PaperBridge/releases)
 
-PaperBridge 不代替作者决定论文内容。它用于保持中文修改、英文表达和 LaTeX 排版之间的对应关系，让多轮修改更容易检查和管理。
+![PaperBridge 1.0.0 中英对照工作区，左侧是项目文件，中间是中英文段落，右侧是由示例论文编译的 PDF](docs/images/paperbridge-overview.png)
 
-![PaperBridge 中英文对照编辑与 PDF 排版预览](docs/images/paperbridge-overview.png)
+## 安装 Windows 版
 
+在 GitHub Releases 找到 `windows-v1.0.0`，从 **Assets** 下载一份 Windows x64 安装包。
 
-## 主要功能
-
-1. **翻译维护**：导入 ZIP 或本地项目时，自动排除导言区、作者信息、宏定义、公式、图表、算法代码和参考文献等非翻译内容；按段落维护中文工作稿和英文 LaTeX，只翻译指定段落或章节。
-2. **版本维护**：支持 Overleaf Git，以及 GitHub、GitLab 等 HTTPS Git 仓库的拉取和推送；支持 OpenAI 兼容接口、DeepSeek、Anthropic 和 Gemini，并可分别配置翻译模型与编译诊断模型。
-
-## 安装
-
-Windows 桌面版是当前主线。请在 [GitHub Releases](https://github.com/liyunjie-phd/PaperBridge/releases) 中选择名称以 `windows-v` 开头的 release 下载；Windows 的开发和发布优先级最高。
-
-### 三条产品线的版本
-
-PBLaTex 插件、Windows 桌面版和 macOS 桌面版各自维护版本号，不再共用一个 `v*` 版本。当前版本记录在 [product-versions.json](product-versions.json) 中：
-
-| 产品线 | 当前版本 | 发布 tag 前缀 | 说明 |
-| --- | --- | --- | --- |
-| Windows | 0.5.1 | `windows-v` | 主线，优先更新和发布 |
-| macOS | 0.1.0 | `macos-v` | 独立的 DMG / ZIP 构建 |
-| PBLaTex | 0.1.0 | `pblatex-v` | VS Code 增强插件 |
-
-例如，Windows 发布使用 `windows-v0.5.1`，macOS 发布使用 `macos-v0.1.1`；一个产品线的版本更新不会改变其他产品线的版本。构建前可运行 `npm run versions:check` 检查版本是否一致，使用 `npm run versions:set -- <product> <version>` 更新指定产品线。
-
-本次版本新增参考文献工作台：可以通过 DOI、doi.org 链接或论文网页自动生成 BibTeX，自动建议 `author_year_keyword` 形式的 citation key，识别重复文献，并在写入前预览和修改 BibTeX。工作台也支持搜索、查看字段解释以及直接插入正文引用。
-
-Windows 提供两种安装包：`PaperBridge-with-Git-Setup.exe` 是完整版，内置 Git 和 Tectonic；`PaperBridge-Setup.exe` 是精简版，不内置 Git，但保留 Tectonic。两种版本都不需要另行安装 Node.js。电脑已经安装 TeX Live 或 MiKTeX，并且可以使用 `latexmk` 时，PaperBridge 会优先使用本机 LaTeX；否则自动使用内置 Tectonic。
-
-安装时可以选择程序安装目录。首次启动时还可以单独选择数据目录，用于保存设置、中文工作稿、源码备份和导入的论文项目，数据目录之后也可以在设置中迁移到其他磁盘。
-
-当前版本没有商业代码签名证书。Windows 首次运行时可能显示“Windows 已保护你的电脑”。确认安装包来源后，可以选择 **更多信息 > 仍要运行**。
-
-可以从 Windows 的 **设置 > 应用 > 已安装的应用** 中卸载 PaperBridge。卸载时可以选择保留数据，也可以删除 PaperBridge 数据目录中的项目、工作稿、备份、设置和缓存。
-
-## 基础配置
-
-### 1. 选择论文来源
-
-首次启动时可以选择四种来源：
-
-| 来源 | 适用情况 | 需要填写或选择 |
+| 版本 | 安装文件 | 适用场景 |
 | --- | --- | --- |
-| Overleaf | 账户和项目已经开通 Overleaf Git | 项目链接、Overleaf Git Token |
-| Git 仓库 | 论文已经保存在 GitHub 或 GitLab | HTTPS 仓库地址；私有仓库还需要用户名和 Token |
-| ZIP 文件 | 从 Overleaf 下载项目，或没有 Overleaf Git 权限 | 本地 `.zip` 文件 |
-| 本地文件夹 | 论文已经保存在电脑中 | 本地 LaTeX 项目目录 |
+| 完整版 · 约 187 MB | `PaperBridge-1.0.0-with-Git-Setup.exe` | 内置 Git，适合需要同步 Overleaf 或其他 Git 仓库的用户 |
+| 精简版 · 约 152 MB | `PaperBridge-1.0.0-Setup.exe` | 适合本地写作，或已装好 Git 的用户 |
 
-ZIP 和本地文件夹可以选择同时连接一个 GitHub 或 GitLab 仓库。导入时只建立连接，不会立即上传；首次推送前会显示完整文件清单，默认只选择 TeX、Bib、样式文件和图片等论文文件。
+两种安装包都内置 Tectonic 和 SyncTeX。PaperBridge 优先调用本机可用的 `latexmk`，也可以使用内置 Tectonic 编译。安装时可选择程序目录，首次启动还可单独选择数据目录，用于保存设置、中文工作稿、备份和导入的项目。
 
-如果项目中存在多个带 `\documentclass` 的完整 TeX 文件，PaperBridge 会要求选择主文件。应选择与 Overleaf 菜单中 **Main document** 相同的文件，不能只根据文件是否叫 `main.tex` 判断。之后可以在设置中切换主 TeX 文件，也可以通过左侧“文档”旁的文件夹加号切换论文项目。
+安装包未做数字签名。可在 Windows 的 **设置 → 应用 → 已安装的应用** 卸载，卸载时可以保留已有数据。
 
-### 2. 配置 Overleaf Git
+## 开始修改论文
 
-Overleaf Git 集成通常需要个人订阅、团队订阅或学校提供的 Overleaf Commons 权限。可以在项目左侧的 **Integrations > Git** 中确认是否已经开通，详细说明见 [Overleaf Git integration](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration)。
+1. **打开一个项目。** 首次启动可新建空白论文、打开本地文件夹、导入 ZIP，或连接 Overleaf 和 HTTPS Git 仓库。之后可从顶部项目名旁的下拉菜单切换或添加项目。
+2. **确认主 TeX 文件。** 多个文件都含有 `\documentclass` 时，选择实际用于编译的入口。对 Overleaf 项目，选择与线上 **Main document** 一致的文件。
+3. **编辑中英文段落。** 文件上方可在 **源码** 和 **中英对照** 间切换。配置 AI 接口后，用 **EN → 中** 生成中文工作稿，或用 **中 → EN** 将修改写回英文 LaTeX。翻译可以逐段执行，显示设置可以调整字号、行距、阅读字体和版宽。
+4. **编译并检查 PDF。** 打开项目时编译一次。修改、保存或拉取文件后，点击顶部 **编译** 刷新 PDF。双击 PDF 内容可跳到源码，双击 TeX 源码也可在 PDF 中定位。定位使用最近一次编译生成的 SyncTeX 数据。
 
-获取 Git Token：
+同名项目在切换列表中可通过目录路径区分。点击 **打开项目文件夹** 可在文件资源管理器中打开对应目录。同一项目中的文件在外部新增或删除后，左侧文件树会随之更新。
 
-1. 登录 Overleaf。
-2. 打开 [Overleaf Account Settings](https://cn.overleaf.com/user/settings)。
-3. 找到 **Git integration authentication tokens**。
-4. 生成新的 Token，并填入 PaperBridge 的 **Overleaf Git Token**。
+**源码** 视图支持直接编辑 `.tex`、`.bib` 和 Markdown 文件，按 `Ctrl+S` 保存。左下角的 **术语表** 可以维护译法和缩写全称，翻译时优先使用项目术语。
 
-PaperBridge 会在本机加密保存 Token，并在拉取和推送时自动使用，不需要再输入 Git 密码。Token 与密码具有相同的访问能力，请不要截图、上传或发送给他人。
+## 管理参考文献
 
-如果出现 `no git access`、`repository not found` 或“项目没有 Git 访问权限”，常见原因是项目链接错误、项目不存在、当前账户没有项目权限，或者项目没有开通 Overleaf Git。没有该功能时，可以从 Overleaf 下载 ZIP 后导入。
+在文件栏打开 **参考文献** 工作台。可通过 DOI 或链接导入、按论文标题检索，或粘贴 BibTeX、导入 `.bib` 文件。确认候选条目和引用键后，可以加入文献库，并将引用直接插入光标处。
 
-### 3. 配置 AI 接口
+从文献详情可以查看正文引用位置并跳转。工作台也会标出未引用、疑似重复和缺少字段的条目，便于整理文献库。
 
-PaperBridge 支持 OpenAI 兼容接口、Anthropic Messages 和 Gemini GenerateContent。首次配置会将同一接口用于段落翻译和编译诊断，之后可以在设置中分别调整。
+## 收回 PDF 审阅意见
 
-以 DeepSeek 为例：
+1. 编译论文后，在左侧 **批注** 中点击 **导出审阅版**。将生成的 PDF 发给审阅人，请对方用平常的 PDF 阅读器添加高亮、便签或手写批注，再保存并发回 PDF。
+2. 点击 **导入审阅** 或将回传 PDF 拖进批注区。在预览中检查新批注、作者和待定位条目，确认后合并。导出时保留的版本信息有助于将批注匹配到当前源码。
+3. 点击批注查看引用片段和匹配位置。可手动给待定位条目指定位置，也可以回复、更新处理状态或导出逐条回复清单。
 
-1. 登录 [DeepSeek 开放平台](https://platform.deepseek.com/)。
-2. 在 [API Keys](https://platform.deepseek.com/api_keys) 创建 API Key。
-3. 在 [Usage](https://platform.deepseek.com/usage) 查看余额和用量。
-4. 在 PaperBridge 中选择 DeepSeek / OpenAI 兼容接口，填写 Base URL 和 API Key，然后点击 **测试连接**。
+审阅时请使用阅读器的保存功能保留可编辑批注。打印成 PDF 或把标注压平为页面图像会影响导入。
 
-| 设置项 | 示例 |
+## 配置 Git 和 AI 接口
+
+### Overleaf 与其他 Git 仓库
+
+在 Overleaf 项目的 **Integrations → Git** 中复制项目地址，在账户设置生成 Git Token，再把两项填入 PaperBridge。Overleaf Cloud 的 Git 入口取决于项目的访问权限，缺少 Git 入口时可从 Overleaf 下载 ZIP，再从本地导入。[Overleaf Git 文档](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration) · [Overleaf Git Token 文档](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration/git-integration-authentication-tokens)
+
+连接 GitHub、GitLab 等仓库时使用 HTTPS 地址。私有仓库需要 Git 用户名和访问令牌。本地文件夹或 ZIP 导入的项目也可以关联仓库，首次推送前可检查并选择要上传的文件。
+
+### 翻译与编译诊断
+
+PaperBridge 支持 OpenAI 兼容接口、Anthropic 和 Gemini。翻译与编译诊断可分别设置接口、模型和密钥。普通源码编辑和本地编译可直接使用。
+
+如果使用 DeepSeek，选择 **DeepSeek / OpenAI 兼容接口**，Base URL 填 `https://api.deepseek.com`，填写平台生成的 API Key，并按服务商提供的名称选择模型。[DeepSeek API 文档](https://api-docs.deepseek.com/)
+
+## 数据与常见问题
+
+中文工作稿和源码备份保存在 PaperBridge 数据目录，可在设置中迁移。项目内的 PDF 批注存储在 `.paperbridge/comments.jsonl`。Windows 桌面版使用系统安全存储保护 API Key 和 Git Token。执行翻译、编译诊断或格式分析时，任务所需的文本会发送到你配置的 AI 接口。
+
+| 现象 | 处理 |
 | --- | --- |
-| API 服务类型 | `DeepSeek / OpenAI 兼容接口` |
-| 模型 | 从下拉框选择，或使用接口提供方要求的自定义模型名 |
-| Base URL | `https://api.deepseek.com` |
-| API Key | 在 DeepSeek 开放平台创建的 Key |
+| Overleaf 拉取失败 | 核对项目 Git 地址、Token 和项目访问权限。 |
+| 修改源码后 PDF 还是旧版 | 点击顶部 **编译**，同时更新排版和 SyncTeX 定位信息。 |
+| 编译提示 `Command \algorithm already defined` | 确认主 TeX 文件，并检查是否同时加载了 `algorithm` 和 `algorithm2e` 等定义同名环境的宏包。 |
+| AI 接口返回 `401` | 确认 API Key 与服务地址匹配。翻译和编译诊断可以单独配置，请分别检查。 |
 
-API Key 只应保存在自己的电脑中，不要提交到 GitHub，也不要随论文项目发送给他人。
+## 从源码运行与构建
 
-### 4. 配置 GitHub 或 GitLab
-
-PaperBridge 目前支持 HTTPS 仓库，不支持 SSH 地址。公开仓库可以不填写 Token；私有仓库需要 Git 用户名和 Personal Access Token。Token 在 Windows 本地加密保存，不会写入论文目录或 Git 远端地址。
-
-如果远端仓库已有内容，PaperBridge 仍可以直接推送本地 ZIP 或文件夹项目：同名文件以当前本地版本更新，远端独有文件保留，不会生成重复路径。首次推送仍会显示文件清单，需确认要上传的论文文件。
-
-## 日常论文修改工作流
-
-1. **导入并检查项目**：选择论文来源和主 TeX 文件，先确认项目可以正常编译并显示 PDF。
-2. **准备中文工作稿**：选择当前 TeX 文件中的章节批量生成中文，或者只点击某个段落的语言按钮。已有中文的段落不会重复调用接口。
-3. **逐段修改**：在左侧修改中文，点击右箭头只更新当前段落的英文 LaTeX。也可以新增或删除段落，或者直接修改右侧英文。
-   翻译和英文编辑会按用户输入直接写入 LaTeX，不再因为命令、引用、公式或标记的新增、删除、变更而拦截；语法问题统一在编译时显示。
-4. **随时检查排版**：以右侧 PDF 为准检查页数、换页、公式、引用、图片和表格位置。双击 PDF 文字可以返回对应段落；找不到翻译段落时会打开 TeX 源码。
-5. **处理简单源码问题**：进入 **TeX** 页面编辑当前项目引用的 `.tex` 和 `.bib` 文件，使用 `Ctrl+S` 保存并重新编译。每个源码文件最多保留最近 3 份备份。
-6. **处理编译错误**：打开右侧编译信息，查看 AI 给出的文件、行号、原因和建议；点击位置后人工确认并修改源码。相同错误会复用本地诊断缓存。
-7. **同步与交付**：确认 PDF 后导出文件；使用 Overleaf 或普通 Git 仓库时，再执行拉取、检查和推送。
-
-## 数据位置与隐私
-
-- PaperBridge 在 Windows 本地运行并编译 LaTeX。
-- 只有翻译、编译诊断或格式分析所需的文字会发送给用户配置的 AI API。
-- 编译诊断只发送错误日志、报错行附近源码和必要的 LaTeX 配置，不发送无关的完整正文。
-- API Key、Overleaf Git Token 和 GitHub/GitLab Token 在桌面版本中通过 Windows 安全存储加密。
-- 中文工作稿和源码备份位于 PaperBridge 数据目录，不写入英文论文的 Git 仓库。
-- 中文工作稿按项目串行保存，使用临时文件原子替换并保留最近备份。
-- TeX / Bib 源码同样串行保存并原子替换；参与编辑的符号链接会被拒绝。
-- 上传未公开论文前，应确认所使用 AI 服务的数据处理和隐私政策符合所在单位要求。
-
-## 常见问题
-
-### Overleaf 无法拉取
-
-先确认项目链接、项目权限和 Overleaf Git 订阅状态。没有 Git 权限时，从 Overleaf 下载 ZIP 后导入。
-
-### `Command \algorithm already defined`
-
-先确认选择了正确的主 TeX 文件，再检查是否同时加载了 `algorithm`、`algorithm2e` 等定义同名环境的宏包。PaperBridge 不会自动删除论文宏包。
-
-### 有编译警告但 PDF 可以生成
-
-普通警告不会阻止 PDF 预览。只有导致编译失败、无法得到可用 PDF 的致命错误才会阻止更新预览。
-
-### Windows 阻止安装程序
-
-当前安装包没有商业代码签名证书。请先确认下载来源，再通过 **更多信息 > 仍要运行** 继续。学校或公司电脑可能通过安全策略禁止未签名软件，应遵守所在单位的规定。
-
-### `AI provider returned 401: Authentication Fails`
-
-DeepSeek 将 401 定义为 API Key 认证失败。PaperBridge 的“段落翻译”和“编译错误诊断”可以使用不同接口，因此应在设置中分别确认两处都显示 **已保存 API Key**，再点击对应的测试按钮。仍然失败时，请在 DeepSeek 开放平台重新创建 Key，并确认没有把 Base URL 误填到 API Key 输入框。
-
-## 本地开发
+Windows 开发和打包使用 Node.js 22。用 PowerShell 在仓库目录执行以下命令。
 
 ```powershell
-npm install
-npm test
-npm run desktop
+npm.cmd ci
+npm.cmd test
+npm.cmd run desktop
 ```
 
-生成 Windows 完整安装版：
+分别生成完整版和精简版 Windows 安装包。
 
 ```powershell
-npm run build:windows
+npm.cmd run build:windows
+npm.cmd run build:windows:slim
 ```
 
-生成不内置 Git 的 Windows 精简版：
+产物位于 `release/windows/`。如需在构建产物中内置 Tectonic 和 SyncTeX，构建时在 `resources/bin/` 提供 `tectonic.exe` 和 `synctex/`。
 
-```powershell
-npm run build:windows:slim
-```
+### macOS 与 VS Code 插件
 
-## macOS 版本
+macOS（Intel 和 Apple Silicon）和 PBLaTex 插件使用独立版本号。版本记录见 [product-versions.json](product-versions.json)，插件用法见 [PBLaTex README](pblatex-vscode/README.md)。
 
-PaperBridge 也提供 macOS 构建版本，支持 Intel (`x64`) 和 Apple Silicon (`arm64`)。Mac 版本使用 `.dmg` 安装包，并在构建时随包附带对应架构的 Tectonic，不需要另外安装 Node.js 或 Git。
+在 GitHub Actions 中可手动运行 **Build PaperBridge for macOS** 生成对应架构的 DMG 和 ZIP。macOS 构建使用 `macos-v*` 标签，Windows 使用 `windows-v*`。
 
-### 从 GitHub Actions 构建
+<details>
+<summary>在 macOS 本地构建</summary>
 
-在 GitHub 仓库的 **Actions > Build PaperBridge for macOS > Run workflow** 中手动启动构建。完成后，在对应的 workflow run 页面下载 `PaperBridge-mac-x64` 或 `PaperBridge-mac-arm64` artifact，其中包含 DMG 和 ZIP。
-
-推送 `macos-v*` 格式的 tag 可以自动触发 macOS 构建；Windows 的构建由 `windows-v*` tag 单独触发。当前构建未配置 Apple Developer 签名和公证；首次打开时如果 macOS 提示无法验证开发者，请在 Finder 中右键应用选择“打开”，或在“系统设置 > 隐私与安全性”中允许打开。
-
-### 在 Mac 上本地构建
-
-需要 macOS、Node.js 22、Homebrew 和 Xcode Command Line Tools：
+准备 Node.js 22、Homebrew 和 Xcode Command Line Tools，然后执行以下命令。
 
 ```bash
 npm ci
 brew install tectonic
-ARCH="$(node -p 'process.arch')"
-mkdir -p "resources/bin/darwin-$ARCH"
-cp "$(brew --prefix tectonic)/bin/tectonic" "resources/bin/darwin-$ARCH/tectonic"
-chmod +x "resources/bin/darwin-$ARCH/tectonic"
-if [ "$ARCH" = "arm64" ]; then npm run build:mac:arm64; else npm run build:mac:x64; fi
+arch="$(node -p 'process.arch')"
+mkdir -p "resources/bin/darwin-$arch"
+cp "$(brew --prefix tectonic)/bin/tectonic" "resources/bin/darwin-$arch/tectonic"
+chmod +x "resources/bin/darwin-$arch/tectonic"
+npm run "build:mac:$arch"
 ```
 
-生成的文件位于 `release/macos/`；Windows 构建产物位于 `release/windows/`。如果 Mac 已经安装 TeX Live 或 MiKTeX，也可以不放入 Tectonic，PaperBridge 会优先使用系统的 `latexmk`。
+产物位于 `release/macos/`。
+
+</details>
