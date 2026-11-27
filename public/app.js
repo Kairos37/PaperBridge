@@ -74,6 +74,7 @@ const state = {
   referencesOpen: false,
   sidebarPanel: localStorage.getItem("paperBridge.sidebarPanel") ?? "files",
   sidebarWidth: Math.min(480, Math.max(120, Number(localStorage.getItem("paperBridge.sidebarWidth")) || 160)),
+  sidebarWidthSave: null,
   bilingualLayout: localStorage.getItem("paperBridge.bilingualLayout") === "vertical" ? "vertical" : "horizontal",
   reviewSelection: null,
   reviewPdfVersion: "",
@@ -453,7 +454,17 @@ function setBilingualLayout(layout, { persist = true } = {}) {
 function applySidebarWidth(persist = true) {
   document.documentElement.style.setProperty("--sidebar-width", `${state.sidebarWidth}px`);
   elements.sidebarResizeHandle.setAttribute("aria-valuenow", String(state.sidebarWidth));
-  if (persist) localStorage.setItem("paperBridge.sidebarWidth", String(state.sidebarWidth));
+  if (persist) {
+    const sidebarWidth = state.sidebarWidth;
+    localStorage.setItem("paperBridge.sidebarWidth", String(sidebarWidth));
+    state.sidebarWidthSave = Promise.resolve(state.sidebarWidthSave)
+      .then(() => api("/api/config", {
+        method: "POST",
+        body: JSON.stringify({ sidebarWidth }),
+        keepalive: true
+      }))
+      .catch(() => toast("侧栏宽度保存失败。", "warning"));
+  }
   fitAllSegmentRows();
   schedulePdfPanelResize();
 }
@@ -2511,6 +2522,7 @@ async function handleDesktopCloseRequest(save) {
   if (!await waitForPendingSaves()) {
     return { ok: false, message: "仍有翻译或保存任务未完成，请稍后再退出。" };
   }
+  await state.sidebarWidthSave;
   try {
     const status = await api("/api/undo/commit", { method: "POST", body: "{}" });
     applyUndoStatus(status);
@@ -5035,10 +5047,16 @@ function updateBuild(build) {
 }
 
 async function refreshProject({ preserveDocument = true, remoteName = state.gitRemoteName } = {}) {
+  const firstLoad = !state.project;
   const previousRoot = state.project?.config?.projectRoot;
   const previousMainTex = state.project?.config?.mainTex;
   const query = remoteName ? `?remoteName=${encodeURIComponent(remoteName)}` : "";
   state.project = await api(`/api/bootstrap${query}`);
+  const savedSidebarWidth = state.project.config?.sidebarWidth;
+  if (firstLoad && !state.sidebarWidthSave && Number.isInteger(savedSidebarWidth)) {
+    state.sidebarWidth = savedSidebarWidth;
+    applySidebarWidth(false);
+  }
   reviewCenter?.invalidate();
   invalidatePdfNavigationIndex();
   const projectChanged = previousRoot && (

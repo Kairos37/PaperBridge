@@ -122,6 +122,7 @@ const DEFAULT_CONFIG = {
   mainTex: "",
   port: 4317,
   autoCompile: false,
+  sidebarWidth: null,
   overleafToken: "",
   gitUsername: "",
   gitToken: "",
@@ -271,12 +272,17 @@ function rememberProject(projectRoot, mainTex, name = "") {
   config.recentProjects = normalizeRecentProjects([project, ...(config.recentProjects || [])]);
 }
 
+function normalizeSidebarWidth(width) {
+  return Number.isInteger(width) ? Math.min(480, Math.max(120, width)) : null;
+}
+
 function mergeConfig(base, incoming = {}) {
   const { review: legacyReview, format: legacyFormat, ...visible } = incoming;
   const incomingDiagnosis = incoming.diagnosis || legacyFormat || legacyReview || {};
   return {
     ...base,
     ...visible,
+    sidebarWidth: normalizeSidebarWidth(incoming.sidebarWidth) ?? base.sidebarWidth,
     recentProjects: normalizeRecentProjects(incoming.recentProjects),
     credentialProfiles: normalizeCredentialProfiles(incoming.credentialProfiles),
     projectGitSettings: normalizeProjectGitSettings(incoming.projectGitSettings),
@@ -309,6 +315,7 @@ async function loadConfig() {
 }
 
 let config = structuredClone(DEFAULT_CONFIG);
+let configWriteQueue = Promise.resolve();
 
 function encodeSecret(value) {
   if (!value || !runtime.encryptSecret) return value || "";
@@ -337,7 +344,11 @@ function storedConfig(value) {
 }
 
 async function saveConfigAt(dataRoot, value = config) {
-  await writeJsonAtomic(path.join(dataRoot, "config.local.json"), storedConfig(value));
+  const target = path.join(dataRoot, "config.local.json");
+  const snapshot = storedConfig(value);
+  const write = configWriteQueue.catch(() => {}).then(() => writeJsonAtomic(target, snapshot));
+  configWriteQueue = write;
+  await write;
 }
 
 async function saveConfig() {
@@ -4418,6 +4429,7 @@ app.post("/api/config", route(async (req, res) => {
   config = {
     ...config,
     autoCompile: false,
+    sidebarWidth: normalizeSidebarWidth(incoming.sidebarWidth) ?? config.sidebarWidth,
     overleafToken: incoming.overleafToken ? String(incoming.overleafToken).trim() : config.overleafToken,
     gitUsername: incoming.gitUsername === undefined ? config.gitUsername : String(incoming.gitUsername || "").trim(),
     gitToken: incoming.gitToken ? String(incoming.gitToken).trim() : config.gitToken,

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { startServer, stopServer } from "../server.js";
 
-test("switching projects preserves saved AI and Overleaf credentials", async () => {
+test("project switching and server restarts preserve sidebar width and credentials", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperbridge-switch-"));
   const firstProject = path.join(root, "first");
   const secondProject = path.join(root, "second");
@@ -14,11 +14,12 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     await fs.mkdir(secondProject);
     await fs.writeFile(path.join(firstProject, "main.tex"), "\\documentclass{article}\n\\begin{document}First\\end{document}\n", "utf8");
     await fs.writeFile(path.join(secondProject, "paper.tex"), "\\documentclass{article}\n\\begin{document}Second\\end{document}\n", "utf8");
-    const server = await startServer({
+    const serverOptions = {
       port: 0,
       dataRoot: path.join(root, "data"),
       projectsRoot: path.join(root, "projects")
-    });
+    };
+    const server = await startServer(serverOptions);
     const request = (url, body) => fetch(`${server.url}${url}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -44,6 +45,10 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     assert.equal(project.config.recentProjects[0].projectRoot, firstProject);
     assert.equal(project.config.recentProjects[0].mainTex, "main.tex");
 
+    response = await request("/api/config", { sidebarWidth: 245 });
+    assert.equal(response.ok, true);
+    assert.equal((await response.json()).sidebarWidth, 245);
+
     response = await request("/api/setup", {
       source: { mode: "local", localPath: secondProject },
       preserveProviders: true
@@ -58,6 +63,7 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     assert.equal(project.config.gitUsername, "saved-git-user");
     assert.equal(project.config.hasGitToken, true);
     assert.equal(project.config.autoCompile, false);
+    assert.equal(project.config.sidebarWidth, 245);
     assert.equal(project.config.translation.model, "deepseek-v4-flash");
     assert.equal(project.config.translation.hasApiKey, true);
     assert.equal(project.config.diagnosis.model, "deepseek-v4-pro");
@@ -73,6 +79,16 @@ test("switching projects preserves saved AI and Overleaf credentials", async () 
     assert.equal(project.config.projectRoot, firstProject);
     assert.equal(project.config.recentProjects[0].projectRoot, firstProject);
     assert.equal(project.config.recentProjects[1].projectRoot, secondProject);
+
+    await stopServer();
+    const restarted = await startServer(serverOptions);
+    response = await fetch(`${restarted.url}/api/bootstrap`);
+    assert.equal(response.ok, true);
+    project = await response.json();
+    assert.equal(project.config.sidebarWidth, 245);
+    assert.equal(project.config.hasOverleafToken, true);
+    assert.equal(project.config.translation.hasApiKey, true);
+    assert.equal(project.config.diagnosis.hasApiKey, true);
   } finally {
     await stopServer();
     const relative = path.relative(os.tmpdir(), root);

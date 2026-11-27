@@ -623,10 +623,6 @@ textarea:focus-visible {
   text-align: left;
 }
 
-.document-button.file {
-  align-items: start;
-}
-
 .document-button:hover {
   background: #edf0f2;
 }
@@ -653,7 +649,9 @@ textarea:focus-visible {
 
 .document-label {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 620;
   line-height: 1.35;
